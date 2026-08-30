@@ -1,0 +1,35 @@
+diff --git a/packages/bundle/base/cordis.patch.yml b/packages/bundle/base/cordis.patch.yml
+index e9567d9206..91d98737ad 100644
+--- a/packages/bundle/base/cordis.patch.yml
++++ b/packages/bundle/base/cordis.patch.yml
+@@ -218,6 +218,12 @@
+ 
++    - id: agent-memory
++      name: '@deepseek-ai/dsh-agent-memory'
++
++    - id: tool-council
++      name: '@deepseek-ai/dsh-tool-council'
++
+ 
+@@ -404,12 +410,25 @@
+-        searchProvider: deepseek-official
++        # The router owns provider choice; naming it here keeps the seam from
++        # having to pick between several usable providers, which it refuses to do.
++        searchProvider: router
+ 
++    # Disabled: the router below owns provider choice. Two usable providers
++    # make the web seam throw WEB_PROVIDER_AMBIGUOUS rather than pick one.
+-      name: '@deepseek-ai/dsh-web-search-deepseek'
++      disabled: true
++
++
++    # Search through the Claude Code CLI, billed to the subscription that is
++    # already paid for rather than a metered key. Listed last so the seam can
++    # fall back to it when the metered providers are unavailable.
++    - id: web-search-cli
++      name: '@deepseek-ai/dsh-web-search-cli'
+-        apiKeyEnv: DEEPSEEK_API_KEY
++        id: router
++        command: claude
++        routeToOpenRouter: true
+ 

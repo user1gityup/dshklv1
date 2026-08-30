@@ -1,0 +1,15 @@
+diff --git a/tsconfig.client.json b/tsconfig.client.json
+index b5874b6fde..8f2723fd72 100644
+--- a/tsconfig.client.json
++++ b/tsconfig.client.json
+@@ -81,6 +81,8 @@
++    { "path": "./packages/client/ui-openrouter-monitor" },
++    { "path": "./packages/client/ui-council-budget" },
+diff --git a/tsconfig.host.json b/tsconfig.host.json
+index f37b98ea57..24fffe412a 100644
+--- a/tsconfig.host.json
++++ b/tsconfig.host.json
+@@ -279,6 +279,9 @@
++    { "path": "./packages/council/tool-council" },
++    { "path": "./packages/memory/agent-memory" },
++    { "path": "./packages/web/web-search-cli" },

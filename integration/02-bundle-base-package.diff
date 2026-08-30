@@ -1,0 +1,13 @@
+diff --git a/packages/bundle/base/package.json b/packages/bundle/base/package.json
+index 2096a64b75..2eee439023 100644
+--- a/packages/bundle/base/package.json
++++ b/packages/bundle/base/package.json
+@@ -104,6 +104,8 @@
++    "@deepseek-ai/dsh-agent-memory": "workspace:^",
++    "@deepseek-ai/dsh-tool-council": "workspace:^",
+@@ -115,7 +117,8 @@
+-    "@deepseek-ai/dsh-agent-instructions": "workspace:^"
++    "@deepseek-ai/dsh-agent-instructions": "workspace:^",
++    "@deepseek-ai/dsh-web-search-cli": "workspace:^"
+   },
+   "peerDependencies": {

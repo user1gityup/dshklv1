@@ -1,0 +1,36 @@
+/* Council switch seated in the composer tool row, before send. */
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--dsw-alias-label-secondary);
+  background: none;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
+.toggle:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* On-state reads as filled rather than merely tinted, so the mode is obvious
+   at a glance while composing. */
+.on {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-active);
+  border-color: var(--dsw-alias-border-l3);
+}
+
+.disc {
+  font-size: 11px;
+}
+
+.label {
+  font-weight: 500;
+}

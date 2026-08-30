@@ -1,0 +1,15 @@
+diff --git a/packages/bundle/web-app/cordis.patch.yml b/packages/bundle/web-app/cordis.patch.yml
+index 61151bdc65..d09cc0a19a 100644
+--- a/packages/bundle/web-app/cordis.patch.yml
++++ b/packages/bundle/web-app/cordis.patch.yml
+@@ -294,6 +294,12 @@
+ 
++    - id: ui-openrouter-monitor
++      name: '@deepseek-ai/dsh-client-ui-openrouter-monitor'
++
++    - id: ui-council-budget
++      name: '@deepseek-ai/dsh-client-ui-council-budget'
++
+ # ── the agent plane moves behind agent presets ─────────────────────────────
+ #
+ # Every row below composes what ONE agent contributes to the host registries:

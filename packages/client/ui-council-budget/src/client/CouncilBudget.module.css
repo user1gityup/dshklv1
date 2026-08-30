@@ -1,0 +1,148 @@
+/* Council budget panel — mirrors the OpenRouter monitor's footer-action shape */
+
+.root { position: relative; }
+
+.trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.trigger:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.triggerIcon { flex-shrink: 0; width: 16px; opacity: 0.7; }
+.triggerLabel { flex: 1; text-align: left; white-space: nowrap; }
+.triggerCost { font-variant-numeric: tabular-nums; opacity: 0.85; }
+
+.panel {
+  box-sizing: border-box;
+  position: fixed;
+  left: 0;
+  width: 340px;
+  max-width: 100vw;
+  max-height: min(560px, 100vh);
+  overflow-y: auto;
+  background: var(--dsw-alias-bg-layer-2);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+  z-index: 100;
+  padding: 16px;
+}
+
+.title {
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+
+.section { margin-bottom: 14px; }
+
+.sectionHead {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dsw-alias-label-secondary);
+  margin-bottom: 6px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 12px;
+  color: var(--dsw-alias-label-primary);
+  cursor: default;
+}
+
+label.row { cursor: pointer; }
+
+.rowName { flex: 1; }
+
+.rowMeta {
+  font-size: 10px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.rowValue {
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-primary);
+}
+
+.caveat {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--dsw-alias-label-primary);
+  margin-top: 6px;
+}
+
+.note {
+  margin-top: 10px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* ── Add an OpenRouter seat ─────────────────────────── */
+
+.addRow {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+
+.addInput {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-3);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 4px;
+}
+
+.addBtn {
+  align-self: flex-start;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 4px;
+}
+
+.addBtn:hover {
+  background: var(--dsw-alias-interactive-bg-active);
+}
+
+.removeBtn {
+  padding: 0 6px;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--dsw-alias-label-secondary);
+  background: none;
+  border: none;
+}
+
+.removeBtn:hover {
+  color: var(--dsw-alias-label-primary);
+}

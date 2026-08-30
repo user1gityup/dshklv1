@@ -1,0 +1,12 @@
+diff --git a/packages/bundle/web-app/package.json b/packages/bundle/web-app/package.json
+index 530192b0e4..cf72c4e577 100644
+--- a/packages/bundle/web-app/package.json
++++ b/packages/bundle/web-app/package.json
+@@ -66,6 +66,7 @@
++    "@deepseek-ai/dsh-client-ui-openrouter-monitor": "workspace:^",
+@@ -112,7 +113,8 @@
+-    "open": "^11.0.0"
++    "open": "^11.0.0",
++    "@deepseek-ai/dsh-client-ui-council-budget": "workspace:^"
+   },
+   "peerDependencies": {

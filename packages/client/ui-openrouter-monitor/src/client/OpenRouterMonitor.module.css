@@ -1,0 +1,429 @@
+/* OpenRouter Monitor — server-monitor-style popover panel */
+
+.root {
+  position: relative;
+}
+
+/* ── Trigger button ──────────────────────────────────── */
+
+.trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 140ms ease-out, background 140ms ease-out;
+}
+
+.trigger:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.triggerIcon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  opacity: 0.7;
+}
+
+.triggerLabel {
+  flex: 1;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.triggerBalance {
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* ── Panel ───────────────────────────────────────────── */
+
+.panel {
+  /* Pinned to the viewport's left edge so the panel is always fully visible,
+     regardless of sidebar width, collapse state, or scroll position. */
+  box-sizing: border-box;
+  position: fixed;
+  left: 0;
+  /* `bottom` is set inline from the trigger position. */
+  width: 340px;
+  max-width: 100vw;
+  max-height: min(520px, 100vh);
+  overflow-y: auto;
+  background: var(--dsw-alias-bg-layer-2);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+  z-index: 100;
+  padding: 16px;
+}
+
+/* Arrow pointing left toward the sidebar */
+.panel::before {
+  content: none;
+}
+
+/* ── Header ──────────────────────────────────────────── */
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+  flex: 1;
+}
+
+.statusDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.statusDot[data-status='ok'] {
+  background: #22c55e;
+}
+
+.statusDot[data-status='err'] {
+  background: #ef4444;
+}
+
+.statusDot[data-status='loading'] {
+  background: #f59e0b;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.statusText {
+  font-size: 11px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* ── Cards ───────────────────────────────────────────── */
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card {
+  background: var(--dsw-alias-bg-layer-3);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.cardHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.cardLabel {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.cardAction {
+  background: none;
+  border: none;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  line-height: 1;
+}
+
+.cardAction:hover {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.cardValue {
+  font-size: 13px;
+  color: var(--dsw-alias-label-secondary);
+  font-style: italic;
+}
+
+/* ── Balance ─────────────────────────────────────────── */
+
+.balanceRow {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.balanceValue {
+  font-size: 26px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.balanceOk {
+  color: #22c55e;
+}
+
+.balanceWarn {
+  color: #f59e0b;
+}
+
+.balanceDanger {
+  color: #ef4444;
+}
+
+.balanceMeta {
+  font-size: 11px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.balanceBar {
+  height: 3px;
+  background: var(--dsw-alias-bg-layer-2);
+  border-radius: 2px;
+  margin-top: 6px;
+  overflow: hidden;
+}
+
+.balanceBarFill {
+  height: 100%;
+  background: var(--dsw-alias-button-info-fill);
+  border-radius: 2px;
+  transition: width 300ms ease-out;
+  min-width: 2px;
+}
+
+/* ── Usage ───────────────────────────────────────────── */
+
+.usageSection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.usageRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.usageLabel {
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.usageValue {
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-primary);
+}
+
+/* ── Per-model breakdown ─────────────────────────────── */
+
+.modelSection {
+  margin-top: 4px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  padding-top: 8px;
+}
+
+.modelHeader {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--dsw-alias-label-secondary);
+  margin-bottom: 6px;
+}
+
+.modelRow {
+  display: grid;
+  grid-template-columns: 1fr 54px;
+  gap: 2px 8px;
+  align-items: center;
+  padding: 3px 0;
+  font-size: 12px;
+}
+
+.modelName {
+  color: var(--dsw-alias-label-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modelCost {
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-primary);
+  text-align: right;
+  font-weight: 500;
+}
+
+.modelBarTrack {
+  grid-column: 1 / -1;
+  height: 2px;
+  background: var(--dsw-alias-bg-layer-2);
+  border-radius: 1px;
+  overflow: hidden;
+}
+
+.modelBarFill {
+  height: 100%;
+  background: var(--dsw-alias-button-info-fill);
+  border-radius: 1px;
+  opacity: 0.6;
+  transition: width 300ms ease-out;
+}
+
+/* ── Key form ────────────────────────────────────────── */
+
+.keyForm {
+  display: flex;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.keyInput {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 4px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.keyInput::placeholder {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.keySaveBtn {
+  padding: 6px 12px;
+  border: 1px solid var(--dsw-alias-button-info-fill);
+  border-radius: 4px;
+  background: var(--dsw-alias-button-info-fill);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.keySaveBtn:hover {
+  opacity: 0.9;
+}
+
+.clearKeyBtn {
+  background: none;
+  border: none;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  text-align: center;
+  padding: 4px;
+}
+
+.clearKeyBtn:hover {
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* ── Key missing state ───────────────────────────────── */
+
+.keyMissing {
+  text-align: center;
+  padding: 8px;
+}
+
+.keyMissingTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+  margin: 0 0 6px;
+}
+
+.keyMissingBody {
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* ── Error state ─────────────────────────────────────── */
+
+.error {
+  text-align: center;
+  padding: 12px 8px;
+}
+
+.error p {
+  font-size: 12px;
+  color: #ef4444;
+  margin: 0 0 8px;
+}
+
+.retryBtn {
+  padding: 4px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 4px;
+  background: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+  cursor: pointer;
+  margin: 0 4px;
+}
+
+.retryBtn:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+/* ── Management-key row (per-model activity opt-in) ───── */
+
+.mgmtRow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.mgmtHint {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.modelTokens {
+  flex-basis: 100%;
+  font-size: 10px;
+  color: var(--dsw-alias-label-secondary);
+  opacity: 0.85;
+}

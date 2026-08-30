@@ -1,0 +1,51 @@
+diff --git a/packages/client/ui-sidebar/src/client/SidebarRoot.module.css b/packages/client/ui-sidebar/src/client/SidebarRoot.module.css
+index c52291bf75..af0329589d 100644
+--- a/packages/client/ui-sidebar/src/client/SidebarRoot.module.css
++++ b/packages/client/ui-sidebar/src/client/SidebarRoot.module.css
+@@ -337,3 +337,13 @@
+   }
+ }
++
++/* Actions parked directly under the workspace and session tree. */
++.regionActions {
++  display: flex;
++  flex-direction: column;
++  gap: 2px;
++  padding: 4px 0 0;
++  margin-top: 4px;
++  border-top: 1px solid var(--ds-color-border, rgba(255, 255, 255, 0.08));
++}
+diff --git a/packages/client/ui-sidebar/src/client/SidebarRoot.tsx b/packages/client/ui-sidebar/src/client/SidebarRoot.tsx
+index a7ef74eaa6..71952e757c 100644
+--- a/packages/client/ui-sidebar/src/client/SidebarRoot.tsx
++++ b/packages/client/ui-sidebar/src/client/SidebarRoot.tsx
+@@ -194,6 +194,10 @@ export function SidebarRoot({
++        {/* Panels that belong with the browsing region rather than the foot. */}
++        <div className={css.regionActions}>
++          {renderSlot('sidebar.region.action', { wide })}
++        </div>
+ 
+diff --git a/packages/client/ui-sidebar/src/client/contract/slots.ts b/packages/client/ui-sidebar/src/client/contract/slots.ts
+index 65f0102543..3c00f10b0b 100644
+--- a/packages/client/ui-sidebar/src/client/contract/slots.ts
++++ b/packages/client/ui-sidebar/src/client/contract/slots.ts
+@@ -44,6 +44,12 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
++    /**
++     * Optional panels directly below the workspace and session tree, inside
++     * the browsing region. Shares the footer action's owner share because the
++     * only thing an occupant needs either place is the column width.
++     */
++    'sidebar.region.action': { kind: 'list'; scope: 'root'; owner: SidebarFooterActionOwnerProps }
+   }
+ }
+ 
+@@ -114,5 +120,6 @@ export type SidebarRootComponentProps =
++    | 'sidebar.region.action'
+   >
+   & SidebarRootInjected & PropsLocale<'sidebar'>
+diff --git a/packages/client/ui-sidebar/src/client/index.ts b/packages/client/ui-sidebar/src/client/index.ts
+index 5b8ac288f7..6bc60e0898 100644
+--- a/packages/client/ui-sidebar/src/client/index.ts
++++ b/packages/client/ui-sidebar/src/client/index.ts
+@@ -50,6 +50,7 @@ export function apply(ctx: ClientContext): void {
++        'sidebar.region.action': { kind: 'list', scope: 'root' },
