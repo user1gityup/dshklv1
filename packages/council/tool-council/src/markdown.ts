@@ -76,6 +76,30 @@ export function renderMarkdown(result: CouncilResult): string {
 
   if (result.phase === 'plan') {
     out.push('## Council — planning only', '')
+    // A planner that failed is the most likely reason a plan looks thin or is
+    // missing entirely, so it goes first rather than being left to inference.
+    for (const failure of result.planFailures ?? []) {
+      out.push(`> **!** ${nameOf(result.seats, failure.seat)} could not write the plan: ${failure.error}`, '')
+    }
+    if (result.plan === undefined || result.plan === '') {
+      out.push('**No seat could produce a plan.** The estimate below is sized on defaults rather than on an agreed approach. Approving will still run the full council.', '')
+    }
+    // When the council voted on the plan, show the competing proposals and the
+    // vote: otherwise a plan chosen by four seats looks identical to one
+    // written by the cheapest.
+    const planDrafts = result.planDrafts ?? []
+    if (planDrafts.length > 0) {
+      out.push('### Proposed plans', '')
+      for (const draft of planDrafts) out.push(...draftSection(draft, result.seats))
+      const votes = [...(result.planVerdict?.scores.entries() ?? [])].sort((a, b) => b[1] - a[1])
+      if (votes.length > 0) {
+        out.push('**Vote on the plan**', '')
+        for (const [id, score] of votes) {
+          out.push(`- ${disc(id)} ${nameOf(result.seats, id)}: ${score.toFixed(2)}`)
+        }
+        out.push('')
+      }
+    }
     if (result.plan !== undefined && result.plan !== '') {
       const author = result.planSeat === undefined ? '' : ` ${disc(result.planSeat)} ${nameOf(result.seats, result.planSeat)}`
       out.push(`**Plan**${author}`, '', result.plan, '')
@@ -94,12 +118,38 @@ export function renderMarkdown(result: CouncilResult): string {
       for (const warning of est.warnings) out.push(`- **!** ${warning}`)
       out.push('')
     }
-    out.push('_Stopped before drafting. Approve to run the full council._')
+    // Say which of the two factors is outstanding, so the gate never looks
+    // like a malfunction.
+    if (result.issueProblem !== undefined) {
+      out.push(`> **!** No Approve control can appear: ${result.issueProblem}. Nothing further will run until this is fixed.`, '')
+    }
+    const approval = result.approval
+    if (approval !== undefined && !approval.allowed) {
+      const step = approval.missing === 'verbal'
+        ? '**Approved.** Send any message to run it.'
+        : approval.missing === 'trigger'
+          ? '**Press Approve** below the composer, then send a message to run it.'
+          : `**Not ready to run:** ${approval.reason}`
+      out.push(`_Stopped before drafting — nothing has been spent._ ${step}`)
+    } else {
+      out.push('_Stopped before drafting. Approve to run the full council._')
+    }
     return out.join('\n')
   }
 
   out.push('## Council', '')
   if (result.budget !== undefined) out.push(`_${result.budget.reason}_`, '')
+
+  // Whether the tool-less seats were grounded is the single most useful thing
+  // to know when judging their drafts, so it goes above the answers.
+  const grounded = result.evidenceUrls
+  if (grounded !== undefined && grounded.length > 0) {
+    out.push('<details><summary>Shared evidence — ' + String(grounded.length) + ' sources, retrieved once and given to every seat</summary>', '')
+    for (const [index, url] of grounded.entries()) out.push(`${String(index + 1)}. ${url}`)
+    out.push('', '</details>', '')
+  } else if (result.seats.some(seat => seat.transport === 'openrouter')) {
+    out.push('> **!** No web evidence could be retrieved, so the tool-less seats answered from training data alone. Treat any current fact below as unverified.', '')
+  }
 
   out.push('## Answers', '')
   for (const draft of result.drafts) out.push(...draftSection(draft, result.seats))
@@ -107,6 +157,35 @@ export function renderMarkdown(result: CouncilResult): string {
   if (result.reviews.length > 0) {
     out.push('## Reviews and votes', '')
     for (const review of result.reviews) out.push(...reviewLine(review, result.seats))
+    out.push('')
+  }
+
+  // Sourcing sits directly above the tally, because it explains the tally:
+  // a penalised seat that lost did not lose on style.
+  const audits = result.audits ?? []
+  const notable = audits.filter(a => a.citations.length > 0 || a.fabricatedToolCalls.length > 0)
+  if (notable.length > 0) {
+    out.push('## Sources checked', '')
+    for (const audit of notable) {
+      const name = nameOf(result.seats, audit.seat)
+      const dead = audit.citations.filter(c => c.status === 'unreachable')
+      const live = audit.citations.filter(c => c.status === 'evidence' || c.status === 'reachable')
+      const parts: string[] = []
+      if (live.length > 0) parts.push(`${String(live.length)} verified`)
+      if (dead.length > 0) parts.push(`**${String(dead.length)} that do not resolve**`)
+      const unchecked = audit.citations.filter(c => c.status === 'unchecked').length
+      if (unchecked > 0) parts.push(`${String(unchecked)} unchecked`)
+      out.push(`- ${disc(audit.seat)} ${name}: ${parts.length === 0 ? 'no sources cited' : parts.join(', ')}`)
+      for (const citation of dead) {
+        out.push(`  - dead: ${citation.url}${citation.detail === undefined ? '' : ` (${citation.detail})`}`)
+      }
+      if (audit.fabricatedToolCalls.length > 0) {
+        out.push(`  - **emitted tool-call syntax it had no tools to run**: ${audit.fabricatedToolCalls.join(', ')}`)
+      }
+      if (audit.penalty > 0) {
+        out.push(`  - scored down by ${(audit.penalty * 100).toFixed(0)}% in the tally below`)
+      }
+    }
     out.push('')
   }
 

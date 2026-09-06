@@ -17,6 +17,58 @@ export interface PanelSeat {
   readonly enabled: boolean
 }
 
+/**
+ * Seats shipped by the council, mirrored here for display before any run.
+ *
+ * DUPLICATED from the host's DEFAULT_SEATS in `tool-council/src/seats.ts`,
+ * which is the source of truth. The client and host faces do not share a
+ * module, so this list is kept in step by hand — and a seat added there but
+ * not here is simply invisible in every panel that reads it, with no error to
+ * say so. That has already happened once. Change both, or neither.
+ *
+ * It lives in this module rather than in one panel because both the budget
+ * panel and the swarm roster route off it: the workers a swarm may use ARE the
+ * council's seats, so a third hand-kept copy would drift from this one the way
+ * this one once drifted from the host.
+ */
+export const DEFAULT_SEATS: readonly PanelSeat[] = [
+  { id: 'claude', name: 'Claude', transport: 'cli', enabled: true },
+  // Free Claude ships disabled: it needs the local proxy running, and a seat
+  // that fails on every run of a fresh install is worse than one switched on
+  // deliberately.
+  { id: 'free-claude', name: 'Free Claude', transport: 'cli', enabled: false },
+  { id: 'openai', name: 'OpenAI', transport: 'cli', enabled: true },
+  { id: 'kimi', name: 'Kimi', transport: 'openrouter', model: 'moonshotai/kimi-k2', enabled: true },
+  { id: 'deepseek', name: 'DeepSeek v4', transport: 'openrouter', model: 'deepseek/deepseek-v4-pro', enabled: true },
+]
+
+/**
+ * Read the seat roster out of the stored settings section.
+ *
+ * Shipped seats with the user's per-seat overrides folded in, followed by any
+ * extra OpenRouter seats they added. This is the whole set of agents the user
+ * has configured, so it is also the whole set a swarm may draw workers from.
+ * @param section - decoded council settings.
+ * @returns every configured seat, shipped and added.
+ */
+export function seatsFrom(section: Record<string, unknown> | undefined): readonly PanelSeat[] {
+  const overrides = (section?.['seats'] ?? {}) as Record<string, { enabled?: boolean; model?: string }>
+  const extras = (section?.['extraSeats'] ?? {}) as Record<string, { name?: string; model?: string; enabled?: boolean }>
+  const base = DEFAULT_SEATS.map(seat => ({
+    ...seat,
+    enabled: overrides[seat.id]?.enabled ?? seat.enabled,
+    model: overrides[seat.id]?.model ?? seat.model,
+  }))
+  const added: PanelSeat[] = Object.entries(extras).map(([id, extra]) => ({
+    id,
+    name: extra.name ?? id,
+    transport: 'openrouter' as const,
+    model: extra.model,
+    enabled: extra.enabled ?? true,
+  }))
+  return [...base, ...added]
+}
+
 /** Per-token prices for one model. */
 export interface Price {
   readonly prompt: number

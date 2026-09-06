@@ -11,6 +11,7 @@
     { "path": "../../../vendor/cordis" },
     { "path": "../../core/tools" },
     { "path": "../../settings/settings" },
+    { "path": "../../web/web" },
     { "path": "../../runtime-diagnostics/invariants" }
   ]
 }

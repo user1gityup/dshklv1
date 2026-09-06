@@ -1,0 +1,85 @@
+/* Council result: the report, and the approval that belongs to it. */
+
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* The report arrives as markdown text. Preserve its structure without
+   reflowing it, and let long lines scroll rather than widen the page. */
+.report {
+  margin: 0;
+  padding: 0;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--dsw-alias-label-primary);
+  background: none;
+  border: none;
+}
+
+/* The gate is the one thing in this view that must not be skimmed past, so it
+   is the only part carrying a border and a filled control. */
+.gate {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  background: var(--dsw-alias-bg-layer-2);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+}
+
+.gateText {
+  flex: 1 1 auto;
+  min-width: 180px;
+  font-weight: 500;
+}
+
+.approve,
+.discard {
+  flex: none;
+  padding: 5px 14px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
+.approve {
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-active);
+  border: 1px solid var(--dsw-alias-border-l3);
+}
+
+.approve:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.discard {
+  color: var(--dsw-alias-label-secondary);
+  background: none;
+  border: 1px solid var(--dsw-alias-border-l2);
+}
+
+.discard:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.approved,
+.note {
+  margin: 0;
+  padding: 6px 0 0;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.approved {
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+}

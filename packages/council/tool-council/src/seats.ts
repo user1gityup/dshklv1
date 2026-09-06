@@ -37,6 +37,24 @@ export interface SeatConfig {
    * distinct argv entry is what makes shell-free spawning safe.
    */
   readonly args?: readonly string[] | undefined
+  /**
+   * Seat-specific hard cap, overriding the run's timeout.
+   *
+   * One global timeout cannot serve a paid seat and a free one equally: a
+   * free-tier provider retries through 529s and is legitimately slower, so a
+   * limit set for a fast seat kills a slow one mid-answer while a limit set
+   * for the slow one lets a hung fast seat stall the round.
+   */
+  readonly timeoutMs?: number | undefined
+  /**
+   * For `cli`: environment layered over the parent process environment.
+   *
+   * This is what lets one CLI serve as two independent seats: a seat can point
+   * at a different backend and keep its own config directory, so it shares
+   * neither credentials nor session state with a seat running on the user's
+   * own subscription.
+   */
+  readonly env?: Readonly<Record<string, string>> | undefined
   /** For `openrouter`: the model identifier to request. */
   readonly model?: string | undefined
   /**
@@ -68,6 +86,8 @@ export interface SeatUsage {
 
 /** A seat's answer, or the reason it produced none. */
 export interface SeatReply {
+  /** URLs the provider reports this seat actually consulted, when it searched. */
+  readonly citedUrls?: readonly string[] | undefined
   readonly seat: SeatId
   /** Model text, empty when `error` is set. */
   readonly text: string
@@ -94,6 +114,41 @@ export const DEFAULT_SEATS: readonly SeatConfig[] = [
     args: ['--allowedTools', 'WebSearch,WebFetch,Read,Glob,Grep', '-p', '{prompt}'],
     contextFileFlag: '--append-system-prompt-file',
     enabled: true,
+  },
+  {
+    id: 'free-claude',
+    name: 'Free Claude',
+    transport: 'cli',
+    command: 'claude',
+    // The same binary as the `claude` seat, deliberately run as a DIFFERENT
+    // instance of itself. Two things make it separate rather than a duplicate:
+    //
+    //  - ANTHROPIC_BASE_URL points at a local Free Claude Code proxy, so the
+    //    request never reaches Anthropic and never draws on the subscription.
+    //  - CLAUDE_CONFIG_DIR gives it its own config, credentials, and session
+    //    state. Without this the two seats would share ~/.claude, and the free
+    //    seat could silently fall back to the logged-in subscription — the
+    //    exact outcome it exists to avoid.
+    //
+    // Off by default: it needs the proxy running, and a seat that fails on
+    // every run of a fresh install is worse than one the user turns on.
+    args: ['--allowedTools', 'WebSearch,WebFetch,Read,Glob,Grep', '-p', '{prompt}'],
+    contextFileFlag: '--append-system-prompt-file',
+    env: {
+      ANTHROPIC_BASE_URL: 'http://127.0.0.1:8082',
+      ANTHROPIC_AUTH_TOKEN: 'freecc',
+      CLAUDE_CONFIG_DIR: join(homedir(), '.dsh', 'free-claude-home'),
+      CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: '1',
+      DISABLE_AUTOUPDATER: '1',
+      DISABLE_FEEDBACK_COMMAND: '1',
+      DISABLE_ERROR_REPORTING: '1',
+    },
+    // Free-tier providers retry through 529s before answering. Measured: a
+    // council-sized prompt spent 84s being refused capacity before giving up,
+    // and the run's 180s default killed it mid-retry. This buys it the room to
+    // fall through to another provider rather than fail the round.
+    timeoutMs: 420_000,
+    enabled: false,
   },
   {
     id: 'openai',
@@ -127,6 +182,29 @@ export const DEFAULT_SEATS: readonly SeatConfig[] = [
  * unusable on the safe spawn path. A real executable has no such restriction,
  * and npm-installed agent CLIs ship one beside their shims.
  */
+/**
+ * Output cap sent with every OpenRouter request.
+ *
+ * Omitting `max_tokens` makes OpenRouter ask for the model's entire context
+ * window. A provider whose real ceiling is lower than the advertised context
+ * then rejects the call outright: Novita serves Kimi K2 with a 98304 cap
+ * against a 100352 context, so every uncapped request 400s before the model
+ * ever sees the prompt. An explicit cap is the difference between a seat that
+ * answers and a seat that never does.
+ *
+ * Set generously — no realistic council draft approaches this.
+ */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 16_000
+
+/**
+ * Web results requested per seat when live search is on.
+ *
+ * OpenRouter bills the web plugin per result, so this is a cost dial, not a
+ * quality dial past the first few: five gives a seat enough to check a claim
+ * without turning every draft into a research bill.
+ */
+export const DEFAULT_WEB_MAX_RESULTS = 5
+
 const WINDOWS_EXTENSIONS = ['.exe', '.com', '.cmd', '.bat', ''] as const
 
 
@@ -218,6 +296,7 @@ function runOnce(
   args: readonly string[],
   signal: AbortSignal | undefined,
   timeoutMs: number,
+  env: Readonly<Record<string, string>> | undefined,
 ): Promise<RunResult> {
   return new Promise<RunResult>((resolve) => {
     // `shell: false` is the security boundary: the prompt is argv data, never
@@ -227,7 +306,13 @@ function runOnce(
     // CVE-2024-27980 fix), so this cannot rely on the 'error' event alone.
     let child
     try {
-      child = spawn(command, [...args], { shell: false, windowsHide: true })
+      child = spawn(command, [...args], {
+        shell: false,
+        windowsHide: true,
+        // Layered over the parent environment rather than replacing it: the
+        // child still needs PATH and the rest of it to start at all.
+        ...env === undefined ? {} : { env: { ...process.env, ...env } },
+      })
     } catch (error) {
       resolve({ stdout: '', stderr: '', code: null, spawnError: describeError(error) })
       return
@@ -292,7 +377,7 @@ export async function askCliSeat(
     : base
   let lastError = 'not found'
   for (const candidate of executableCandidates(command)) {
-    const result = await runOnce(candidate, args, signal, timeoutMs)
+    const result = await runOnce(candidate, args, signal, timeoutMs, seat.env)
     // ENOENT means this spelling does not exist; try the next candidate.
     // EINVAL is Node refusing to spawn a batch shim without a shell; treat it
     // as "wrong spelling" so the next candidate gets a turn.
@@ -331,6 +416,8 @@ export async function askOpenRouterSeat(
   apiKey: string | undefined,
   signal: AbortSignal | undefined,
   timeoutMs: number,
+  maxTokens: number = DEFAULT_MAX_OUTPUT_TOKENS,
+  webMaxResults?: number | undefined,
 ): Promise<SeatReply> {
   const started = Date.now()
   if (apiKey === undefined || apiKey === '') {
@@ -349,7 +436,18 @@ export async function askOpenRouterSeat(
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }] }),
+      body: JSON.stringify({
+        model,
+        max_tokens: maxTokens,
+        messages: [{ role: 'user', content: prompt }],
+        // Live search, when the caller asks for it. This is what lets a
+        // hosted seat check a current fact instead of answering from training
+        // data — the gap that shared evidence and citation auditing exist to
+        // work around. OpenRouter bills per result, so it is opt-in.
+        ...webMaxResults === undefined || webMaxResults <= 0
+          ? {}
+          : { plugins: [{ id: 'web', max_results: webMaxResults }] },
+      }),
       signal: composite,
     })
     if (!response.ok) {
@@ -363,7 +461,7 @@ export async function askOpenRouterSeat(
     }
     const body = await response.json() as {
       model?: unknown
-      choices?: readonly { message?: { content?: unknown; reasoning?: unknown } }[]
+      choices?: readonly { message?: { content?: unknown; reasoning?: unknown; annotations?: unknown } }[]
       usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; cost?: unknown }
     }
     const num = (value: unknown): number | undefined =>
@@ -385,7 +483,24 @@ export async function askOpenRouterSeat(
     if (text === '') {
       return { seat: seat.id, text: '', error: 'empty response', ms: Date.now() - started, usage }
     }
-    return { seat: seat.id, text, ms: Date.now() - started, usage }
+    // Surface what the seat actually consulted. A seat that searched and a
+    // seat that recalled look identical in the text; the citations are the
+    // only way the audit can tell them apart.
+    const cited: string[] = []
+    const annotations = (first as { annotations?: unknown } | undefined)?.annotations
+    if (Array.isArray(annotations)) {
+      for (const entry of annotations) {
+        const citation = (entry as { url_citation?: { url?: unknown } }).url_citation
+        if (typeof citation?.url === 'string') cited.push(citation.url)
+      }
+    }
+    return {
+      seat: seat.id,
+      text,
+      ms: Date.now() - started,
+      usage,
+      ...cited.length === 0 ? {} : { citedUrls: cited },
+    }
   } catch (error) {
     return { seat: seat.id, text: '', error: describeError(error), ms: Date.now() - started }
   }
@@ -407,14 +522,17 @@ export function askSeat(
   signal: AbortSignal | undefined,
   timeoutMs: number,
   memory?: { file?: string | undefined; text?: string | undefined } | undefined,
+  webMaxResults?: number | undefined,
 ): Promise<SeatReply> {
+  // A seat's own cap wins over the run's, in both directions.
+  const cap = seat.timeoutMs ?? timeoutMs
   if (seat.transport === 'cli') {
-    return askCliSeat(seat, prompt, signal, timeoutMs, memory?.file)
+    return askCliSeat(seat, prompt, signal, cap, memory?.file)
   }
   // An OpenRouter seat has no filesystem, so shared memory has to ride in the
   // prompt. That is the cost of including a hosted model in the council.
   const withMemory = memory?.text === undefined || memory.text === ''
     ? prompt
     : `${memory.text}\n\n---\n\n${prompt}`
-  return askOpenRouterSeat(seat, withMemory, apiKey, signal, timeoutMs)
+  return askOpenRouterSeat(seat, withMemory, apiKey, signal, cap, undefined, webMaxResults)
 }

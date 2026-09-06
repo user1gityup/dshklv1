@@ -1,0 +1,194 @@
+/* Pipeline control, docked above the composer with the swarm roster. */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-2);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+
+.head {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.title {
+  font-weight: 600;
+}
+
+.sub {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.input {
+  flex: 1 1 240px;
+  min-width: 160px;
+  padding: 5px 8px;
+  font: inherit;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-1);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+}
+
+.action {
+  padding: 5px 12px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover-solid);
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 6px;
+}
+
+.action:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover-accent);
+}
+
+.action:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.stage {
+  font-weight: 600;
+}
+
+/* The request a run is carrying, kept to one line: it is context, not the
+   subject of the panel. */
+.query {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--dsw-alias-label-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A held run is waiting, not broken, so it reads amber rather than red. */
+.held {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 8px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-state-warn-tertiary);
+  border: 1px solid var(--dsw-alias-state-warn-secondary);
+  border-radius: 6px;
+}
+
+.lamp {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--dsw-alias-state-warn-primary);
+  box-shadow: 0 0 5px 1px var(--dsw-alias-state-warn-primary);
+}
+
+/* The exact text the button will send, so nothing is sent unseen. */
+.preview {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11.5px;
+}
+
+/* A saved run: the wording was agreed once, so picking it is a click and
+   running it is the Run button. The full request is on the pill's title,
+   because a name is not a promise about what will be sent. */
+.presetLabel {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.preset {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-1);
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 999px;
+}
+
+.preset:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover-accent);
+}
+
+.preset:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* Picked: this is the run the Run button will send. Green carries it — on a
+   lamp as well as the border, because colour alone is not a state a
+   colour-blind reader can read. */
+.presetOn {
+  color: var(--dsw-alias-state-success-primary);
+  border-color: var(--dsw-alias-state-success-primary);
+  background: var(--dsw-alias-state-success-tertiary);
+}
+
+.presetOn::before {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dsw-alias-state-success-primary);
+  box-shadow: 0 0 5px 1px var(--dsw-alias-state-success-primary);
+}
+
+/* Not picked, while something else is. Red says "not this one" — these pills
+   are still choosable, so they dim rather than look disabled, and the hollow
+   lamp is the shape difference that survives without colour. */
+.presetOff {
+  color: var(--dsw-alias-state-error-primary);
+  border-color: var(--dsw-alias-state-error-secondary);
+  opacity: 0.75;
+}
+
+.presetOff::before {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  border: 1px solid var(--dsw-alias-state-error-primary);
+}
+
+.presetOff:hover:not(:disabled) {
+  opacity: 1;
+}
+
+/* The area a saved run belongs to, carried on the pill so two areas can
+   both own a run called `smoke-test` without either being ambiguous. */
+.presetArea {
+  margin-right: 5px;
+  padding: 1px 5px;
+  font-size: 10.5px;
+  border-radius: 4px;
+  color: var(--dsw-alias-label-secondary);
+  background: var(--dsw-alias-interactive-bg-active);
+}

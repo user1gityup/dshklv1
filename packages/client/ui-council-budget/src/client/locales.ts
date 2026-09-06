@@ -37,6 +37,33 @@ export type BudgetKey =
   | 'mode.title'
   | 'mode.on'
   | 'mode.hint'
+  | 'approve.title'
+  | 'approve.action'
+  | 'approve.discard'
+  | 'approve.awaitingMessage'
+  | 'swarm.toggleTitle'
+  | 'swarm.toggleLabel'
+  | 'swarm.toggleOn'
+  | 'swarm.toggleHint'
+  | 'swarm.title'
+  | 'swarm.hint'
+  | 'swarm.subscription'
+  | 'swarm.metered'
+  | 'swarm.noneEnabled'
+  | 'pipeline.title'
+  | 'pipeline.hint'
+  | 'pipeline.run'
+  | 'pipeline.continue'
+  | 'pipeline.held'
+  | 'pipeline.resumeNow'
+  | 'pipeline.presets'
+  | 'pipeline.restart'
+  | 'pipeline.placeholder'
+  | 'swarm.meteredWarning'
+  | 'approve.always'
+  | 'approve.alwaysHint'
+  | 'approve.autoOn'
+  | 'approve.autoOff'
 
 export const NS = 'council-budget'
 
@@ -77,6 +104,33 @@ export const en: Record<BudgetKey, string> = {
   'mode.title': 'Council mode',
   'mode.on': 'Route every request through the council',
   'mode.hint': 'Trivial replies still answer directly. Each run stops at a plan for approval first.',
+  'approve.title': 'Council plan waiting for your approval',
+  'approve.action': 'Approve',
+  'approve.discard': 'Discard',
+  'approve.awaitingMessage': 'Approved. Send a message to run the council.',
+  'pipeline.title': 'Pipeline',
+  'pipeline.hint': 'Council agrees the approach, the swarm runs it, the council reviews it. One stage per press.',
+  'pipeline.run': 'Run pipeline',
+  'pipeline.continue': 'Continue',
+  'pipeline.held': 'Held on quota — resuming in',
+  'pipeline.resumeNow': 'Resume now',
+  'pipeline.presets': 'Saved runs',
+  'pipeline.restart': 'Start over',
+  'pipeline.placeholder': 'What should the chain work on?',
+  'swarm.toggleTitle': 'Swarm',
+  'swarm.toggleLabel': 'Run approved work as a swarm',
+  'swarm.toggleOn': 'Approved work is split across your seats and run in waves',
+  'swarm.toggleHint': 'Split a request across your seats and run it in waves. They read, search and report.',
+  'swarm.title': 'Swarm roster',
+  'swarm.hint': 'Who does what. Your council seats are the workers; subscription seats are preferred, so what you already pay for carries the load.',
+  'swarm.subscription': 'subscription',
+  'swarm.metered': 'metered',
+  'swarm.noneEnabled': 'No worker is enabled, so nothing can run.',
+  'swarm.meteredWarning': 'A metered worker is enabled: units it takes are billed per token.',
+  'approve.always': 'Always approve',
+  'approve.alwaysHint': 'Stop asking before each council run. The council will spend without checking with you first. You can switch this off at any time.',
+  'approve.autoOn': 'Council auto-approve is ON — runs start without asking you.',
+  'approve.autoOff': 'Turn off',
   'note.estimate': 'Estimates only. Subscription seats are priced from their monthly fee divided by measured output; prompt size is assumed at 3x output, so a cache-heavy workload costs less than shown.',
 }
 
@@ -117,5 +171,32 @@ export const zh: Record<BudgetKey, string> = {
   'mode.title': '议会模式',
   'mode.on': '所有请求都交由议会处理',
   'mode.hint': '简单回复仍直接作答。每次运行都会先停在计划处等待批准。',
+  'approve.title': '议会计划等待您的批准',
+  'approve.action': '批准',
+  'approve.discard': '丢弃',
+  'approve.awaitingMessage': '已批准。发送一条消息即可运行议会。',
+  'pipeline.title': '流水线',
+  'pipeline.hint': '议会定方案，蜂群执行，议会复核。每次按下推进一个阶段。',
+  'pipeline.run': '运行流水线',
+  'pipeline.continue': '继续',
+  'pipeline.held': '额度用尽，暂停中，恢复倒计时',
+  'pipeline.resumeNow': '立即恢复',
+  'pipeline.presets': '已保存的运行',
+  'pipeline.restart': '重新开始',
+  'pipeline.placeholder': '这条链要处理什么？',
+  'swarm.toggleTitle': '蜂群',
+  'swarm.toggleLabel': '以蜂群方式执行已批准的工作',
+  'swarm.toggleOn': '已批准的工作将按波次分配给你配置的席位',
+  'swarm.toggleHint': '将请求拆分给你的席位并按波次运行。它们会读取、搜索并汇报。',
+  'swarm.title': '蜂群名单',
+  'swarm.hint': '谁负责什么。优先使用订阅工作者，让已付费的席位承担主要工作。',
+  'swarm.subscription': '订阅',
+  'swarm.metered': '按量计费',
+  'swarm.noneEnabled': '没有启用任何工作者，因此无法运行。',
+  'swarm.meteredWarning': '已启用按量计费的工作者：它承担的任务将按 token 计费。',
+  'approve.always': '始终批准',
+  'approve.alwaysHint': '不再在每次运行前询问。议会将直接花费，不再与您确认。可随时关闭。',
+  'approve.autoOn': '议会自动批准已开启 — 运行将不再征求您的同意。',
+  'approve.autoOff': '关闭',
   'note.estimate': '仅为估算。订阅制席位按月费除以实测输出计价；提示词长度按输出的 3 倍估计，因此缓存较多的工作负载实际成本更低。',
 }

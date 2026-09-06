@@ -190,13 +190,14 @@ describe('executable candidates', () => {
 
 describe('seat resolution', () => {
   it('returns shipped defaults when nothing is overridden', () => {
-    expect(resolveSeats().map(seat => seat.id)).toEqual(['claude', 'openai', 'kimi', 'deepseek'])
+    expect(resolveSeats().map(seat => seat.id)).toEqual(['claude', 'free-claude', 'openai', 'kimi', 'deepseek'])
   })
 
   it('applies a model override without touching other seats', () => {
     const seats = resolveSeats({ kimi: { model: 'moonshotai/kimi-k2-0905' } })
     expect(seats.find(seat => seat.id === 'kimi')?.model).toBe('moonshotai/kimi-k2-0905')
-    expect(seats.find(seat => seat.id === 'deepseek')?.model).toBe(DEFAULT_SEATS[3]?.model)
+    expect(seats.find(seat => seat.id === 'deepseek')?.model)
+      .toBe(DEFAULT_SEATS.find(seat => seat.id === 'deepseek')?.model)
   })
 
   it('can disable one seat', () => {
@@ -243,7 +244,7 @@ describe('report rendering', () => {
 describe('extra seats', () => {
   it('appends a configured OpenRouter seat after the shipped four', () => {
     const seats = resolveSeats({}, { grok: { model: 'x-ai/grok-4', name: 'Grok' } })
-    expect(seats.map(seat => seat.id)).toEqual(['claude', 'openai', 'kimi', 'deepseek', 'grok'])
+    expect(seats.map(seat => seat.id)).toEqual(['claude', 'free-claude', 'openai', 'kimi', 'deepseek', 'grok'])
     const grok = seats.find(seat => seat.id === 'grok')
     expect(grok?.transport).toBe('openrouter')
     expect(grok?.model).toBe('x-ai/grok-4')
@@ -270,7 +271,7 @@ describe('extra seats', () => {
   it('gives an extra seat a colour distinct from every shipped seat', () => {
     const palette = createPalette(true)
     const extra = palette.seat('grok', 'x')
-    for (const builtin of ['claude', 'openai', 'kimi', 'deepseek'] as const) {
+    for (const builtin of ['claude', 'free-claude', 'openai', 'kimi', 'deepseek'] as const) {
       expect(extra).not.toBe(palette.seat(builtin, 'x'))
     }
   })

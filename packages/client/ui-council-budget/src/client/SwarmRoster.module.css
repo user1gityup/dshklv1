@@ -1,0 +1,147 @@
+/* Swarm roster, docked above the composer while swarm mode is on. */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-2);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+
+.head {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.title {
+  font-weight: 600;
+}
+
+.sub {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* A disabled worker stays legible: it is a choice the user can reverse, not
+   an error state. */
+.off {
+  opacity: 0.55;
+}
+
+.name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 190px;
+  cursor: pointer;
+}
+
+/* Cost class sits beside the name, so switching a worker on shows its cost
+   consequence at the moment of switching rather than afterwards. */
+.free,
+.metered {
+  padding: 1px 6px;
+  font-size: 11px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.free {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-active);
+}
+
+.metered {
+  color: var(--dsw-alias-label-secondary);
+  border: 1px solid var(--dsw-alias-border-l2);
+}
+
+.kinds {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--dsw-alias-label-secondary);
+  background: none;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+}
+
+/* An indicator lamp per kind: red for a kind this worker will not take, green
+   and lit for one it will. The chip itself stays quiet so five of them in a row
+   read as a status strip rather than five competing buttons. */
+.kind::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dsw-alias-state-error-primary);
+  flex: none;
+}
+
+.kind:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.kind:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* Lit: the assignment is on. The lamp carries the state; the chip only lifts
+   its own surface enough to look pressed in. */
+.kindOn {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover-solid);
+  border-color: var(--dsw-alias-border-l3);
+}
+
+.kindOn::before {
+  background: var(--dsw-alias-state-success-primary);
+  box-shadow: 0 0 5px 1px var(--dsw-alias-state-success-primary);
+}
+
+.kindOn:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover-accent);
+}
+
+.warn {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+}
+
+/*
+ * The model a seat actually runs, shown beside its name so "which model is
+ * doing this" is answered in the roster rather than after the run. Only
+ * OpenRouter seats carry one; a CLI seat's model belongs to its own binary.
+ */
+.model {
+  font-size: 11px;
+  color: var(--dsw-alias-label-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
