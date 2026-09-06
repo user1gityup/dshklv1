@@ -346,9 +346,11 @@ export function PipelineControl({ t, settings, send }: PipelineControlProps): JS
         : null}
 
       {/* The prompt is shown, not hidden: a button that speaks for the user
-          should say what it is about to say. */}
+          should say what it is about to say. It scrolls rather than grows, so
+          a long saved run cannot push the composer off the window; the tab
+          stop is what makes that scroll reachable without a mouse. */}
       {!running && outgoing !== ''
-        ? <p className={css.preview}>{startPrompt(outgoing)}</p>
+        ? <p className={css.preview} tabIndex={0}>{startPrompt(outgoing)}</p>
         : null}
     </div>
   )
