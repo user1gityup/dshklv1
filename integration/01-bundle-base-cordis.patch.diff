@@ -1,8 +1,13 @@
 diff --git a/packages/bundle/base/cordis.patch.yml b/packages/bundle/base/cordis.patch.yml
-index e9567d9206..91d98737ad 100644
+index e9567d9206..422f2da078 100644
 --- a/packages/bundle/base/cordis.patch.yml
 +++ b/packages/bundle/base/cordis.patch.yml
-@@ -218,6 +218,12 @@
+@@ -215,12 +215,18 @@
+       name: '@deepseek-ai/dsh-tool-pwsh'
+       disabled: !!js process.platform !== 'win32'
+ 
+     - id: tool-jobs
+       name: '@deepseek-ai/dsh-tool-jobs'
  
 +    - id: agent-memory
 +      name: '@deepseek-ai/dsh-agent-memory'
@@ -10,26 +15,47 @@ index e9567d9206..91d98737ad 100644
 +    - id: tool-council
 +      name: '@deepseek-ai/dsh-tool-council'
 +
+     - id: fs-observation-policy
+       name: '@deepseek-ai/dsh-fs-observation-policy'
  
-@@ -404,12 +410,25 @@
+     - id: tool-fs
+       name: '@deepseek-ai/dsh-tool-fs'
+ 
+@@ -401,19 +407,35 @@
+     # protection and the model would choose the request target. Search is a full
+     # auxiliary model request with server-side retrieval, so this shipped DeepSeek
+     # route gets 60s while the provider-neutral tool default remains 30s.
+     - id: web
+       name: '@deepseek-ai/dsh-web'
+       config:
 -        searchProvider: deepseek-official
-+        # The router owns provider choice; naming it here keeps the seam from
-+        # having to pick between several usable providers, which it refuses to do.
+-
++        # The router owns provider choice. Naming it here keeps the seam from
++        # having to pick between several usable providers, which it refuses to
++        # do: two usable providers and no named one is WEB_PROVIDER_AMBIGUOUS.
 +        searchProvider: router
- 
-+    # Disabled: the router below owns provider choice. Two usable providers
-+    # make the web seam throw WEB_PROVIDER_AMBIGUOUS rather than pick one.
--      name: '@deepseek-ai/dsh-web-search-deepseek'
++
++    # Disabled because the router below owns the choice. Keep this enabled
++    # instead if you would rather not route, and leave searchProvider pointed
++    # at it -- but never pin searchProvider to a provider you have disabled.
+     - id: web-search-deepseek
+       name: '@deepseek-ai/dsh-web-search-deepseek'
 +      disabled: true
-+
-+
-+    # Search through the Claude Code CLI, billed to the subscription that is
-+    # already paid for rather than a metered key. Listed last so the seam can
-+    # fall back to it when the metered providers are unavailable.
+       config:
+         apiKeyEnv: DEEPSEEK_API_KEY
+ 
++    # Search through an agent CLI, billed to a subscription already paid for
++    # rather than a metered key.
 +    - id: web-search-cli
 +      name: '@deepseek-ai/dsh-web-search-cli'
--        apiKeyEnv: DEEPSEEK_API_KEY
++      config:
 +        id: router
 +        command: claude
 +        routeToOpenRouter: true
++
+     - id: tool-web
+       name: '@deepseek-ai/dsh-tool-web'
+       config:
+         fetch: false
+         searchTimeoutMs: 60000
  

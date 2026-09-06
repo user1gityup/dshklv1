@@ -1,13 +1,46 @@
 diff --git a/packages/bundle/base/package.json b/packages/bundle/base/package.json
-index 2096a64b75..2eee439023 100644
+index 2096a64b75..fbe087969c 100644
 --- a/packages/bundle/base/package.json
 +++ b/packages/bundle/base/package.json
-@@ -104,6 +104,8 @@
+@@ -41,12 +41,13 @@
+   "dependencies": {
+     "@deepseek-ai/cordis-plugin-hmr": "workspace:^",
+     "@deepseek-ai/cordis-plugin-timer": "workspace:^",
+     "@deepseek-ai/dsh-agent": "workspace:^",
+     "@deepseek-ai/dsh-agent-default-model": "workspace:^",
+     "@deepseek-ai/dsh-agent-loop": "workspace:^",
 +    "@deepseek-ai/dsh-agent-memory": "workspace:^",
+     "@deepseek-ai/dsh-attachment-local": "workspace:^",
+     "@deepseek-ai/dsh-shell-env": "workspace:^",
+     "@deepseek-ai/dsh-bash-sandbox": "workspace:^",
+     "@deepseek-ai/dsh-command-compact": "workspace:^",
+     "@deepseek-ai/dsh-command-feedback": "workspace:^",
+     "@deepseek-ai/dsh-command-goal": "workspace:^",
+@@ -88,12 +89,13 @@
+     "@deepseek-ai/dsh-subagent-fork-in-process": "workspace:^",
+     "@deepseek-ai/dsh-subagent-spawn-in-process": "workspace:^",
+     "@deepseek-ai/dsh-subprocess-local": "workspace:^",
+     "@deepseek-ai/dsh-system-prompt": "workspace:^",
+     "@deepseek-ai/dsh-jobs-local": "workspace:^",
+     "@deepseek-ai/dsh-tool-call-timeout-policy": "workspace:^",
 +    "@deepseek-ai/dsh-tool-council": "workspace:^",
-@@ -115,7 +117,8 @@
--    "@deepseek-ai/dsh-agent-instructions": "workspace:^"
-+    "@deepseek-ai/dsh-agent-instructions": "workspace:^",
-+    "@deepseek-ai/dsh-web-search-cli": "workspace:^"
+     "@deepseek-ai/dsh-token-meter": "workspace:^",
+     "@deepseek-ai/dsh-tool-bash": "workspace:^",
+     "@deepseek-ai/dsh-tool-fs": "workspace:^",
+     "@deepseek-ai/dsh-tool-fs-search": "workspace:^",
+     "@deepseek-ai/dsh-tool-goal": "workspace:^",
+     "@deepseek-ai/dsh-tool-pwsh": "workspace:^",
+@@ -110,12 +112,13 @@
+     "@deepseek-ai/dsh-tools": "workspace:^",
+     "@deepseek-ai/dsh-typert-loader": "workspace:^",
+     "@deepseek-ai/dsh-typert-registry": "workspace:^",
+     "@deepseek-ai/dsh-user-approval": "workspace:^",
+     "@deepseek-ai/dsh-user-questions": "workspace:^",
+     "@deepseek-ai/dsh-web": "workspace:^",
++    "@deepseek-ai/dsh-web-search-cli": "workspace:^",
+     "@deepseek-ai/dsh-web-search-deepseek": "workspace:^",
+     "@deepseek-ai/dsh-workflow-worker-thread": "workspace:^",
+     "@deepseek-ai/dsh-agent-instructions": "workspace:^"
    },
    "peerDependencies": {
+     "@deepseek-ai/dsh-invariants": "workspace:^",

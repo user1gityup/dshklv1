@@ -1,15 +1,39 @@
 diff --git a/tsconfig.client.json b/tsconfig.client.json
-index b5874b6fde..8f2723fd72 100644
+index b5874b6fde..e9006b9f8c 100644
 --- a/tsconfig.client.json
 +++ b/tsconfig.client.json
-@@ -81,6 +81,8 @@
-+    { "path": "./packages/client/ui-openrouter-monitor" },
+@@ -63,12 +63,14 @@
+     { "path": "./packages/extensions/ui-cordis" },
+     { "path": "./packages/test-support/client-runtime" },
+     { "path": "./packages/client/ui-layout" },
+     { "path": "./packages/client/ui-sidebar" },
+     { "path": "./packages/client/ui-brand-official" },
+     { "path": "./packages/client/ui-conversation" },
 +    { "path": "./packages/client/ui-council-budget" },
++    { "path": "./packages/client/ui-openrouter-monitor" },
+     { "path": "./packages/client/ui-tool" },
+     { "path": "./packages/client/ui-deliverables" },
+     { "path": "./packages/client/ui-workflow-run" },
+     { "path": "./packages/client/ui-workspace" },
+     { "path": "./packages/client/ui-input-trigger" },
+     { "path": "./packages/client/ui-commands" },
 diff --git a/tsconfig.host.json b/tsconfig.host.json
-index f37b98ea57..24fffe412a 100644
+index f37b98ea57..3bb428ab68 100644
 --- a/tsconfig.host.json
 +++ b/tsconfig.host.json
-@@ -279,6 +279,9 @@
+@@ -210,12 +210,15 @@
+     { "path": "./packages/terminal/tool-terminal" },
+     { "path": "./packages/code-runtime/code-runtime" },
+     { "path": "./packages/code-runtime/code-runtime-python" },
+     { "path": "./packages/code-runtime/code-runtime-worker-thread" },
+     { "path": "./packages/llm/llm-deepseek" },
+     { "path": "./packages/llm/llm-pi-ai" },
 +    { "path": "./packages/council/tool-council" },
 +    { "path": "./packages/memory/agent-memory" },
 +    { "path": "./packages/web/web-search-cli" },
+     { "path": "./packages/shell/bash-local" },
+     { "path": "./packages/shell/shell-env" },
+     { "path": "./packages/shell/pwsh-local" },
+     { "path": "./packages/shell/pwsh-sandbox" },
+     { "path": "./packages/shell/tool-pwsh" },
+     { "path": "./native/landlock-run/packages/entry" },

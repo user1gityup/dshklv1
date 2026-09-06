@@ -1,8 +1,10 @@
 # Host wiring
 
-These diffs are taken against a stock DeepSeek Harness `master`. Line numbers
-will have drifted; apply them by hand, or with `git apply -3`, and read each one
-before you do.
+These diffs are generated against stock DeepSeek Harness `master` at
+`b150a551b8`, and every one of them applies to that tree with a plain
+`git apply`. On a newer `master` line numbers will have drifted — use
+`git apply -3`, or apply them by hand. Read each one before you do: five of the
+six only add lines, and the sixth changes one setting, described below.
 
 Order matters. The bundle must **mount** each plugin in `cordis.patch.yml` *and*
 **declare** it in the bundle's `package.json`. Doing only the first builds
@@ -39,8 +41,22 @@ Two changes there are opinions, not requirements:
 
 ## Slot placement
 
-Diff 05 adds a new slot to `packages/client/ui-sidebar`. If you would rather not
-patch an upstream package, mount `ui-council-budget` into an existing slot
-instead — `sidebar.footer.action` works, at the cost of position. The panel
-measures its trigger's rect at open time and positions itself relative to it, so
-it will not cover its own button wherever it ends up.
+`ui-council-budget` registers into four host slots, and only one of them needs a
+patch:
+
+| Slot | Registered | Upstream? |
+| --- | --- | --- |
+| `sidebar.region.action` | the budget panel | **No** — added by diff 05 |
+| `conversation.input.right` | council toggle, swarm toggle | Yes |
+| `conversation.input.dock` | swarm roster, pipeline panel | Yes |
+| `tool.call.toolview` | the Approve control, and the council's own call view | Yes |
+
+So diff 05 is the only one that modifies an upstream package, and it exists
+solely to give the budget panel somewhere to live. If you would rather not patch
+upstream, mount `ui-council-budget` into an existing slot instead —
+`sidebar.footer.action` works, at the cost of position. The panel measures its
+trigger's rect at open time and positions itself relative to it, so it will not
+cover its own button wherever it ends up.
+
+The other three slots are upstream as they stand, which is why the swarm roster,
+the pipeline panel and the Approve control need no wiring of their own.
