@@ -1,0 +1,117 @@
+# A three-stage review of one or more codebases.
+#
+# Stage 1 (council) agrees a debug plan and a dev checklist. Stage 2 (swarm)
+# executes it. Stage 3 (council) reviews what stage 2 did.
+#
+# Written for the awkward case this pattern exists to handle: two codebases
+# that share module names whose contents have diverged, where a fix is not one
+# edit even though it looks like one. Reviewing a single repository works too —
+# delete the second root and the divergence section.
+#
+# Paste into $DSH_HOME/settings.yaml under council.pipelinePresets, then replace
+# everything in <angle brackets>. Set council.fileRoots to the same roots, or no
+# seat will be told it may read them.
+
+council:
+  pipelinePresets:
+    review/codebase:
+      name: Codebase review - debug and dev plan
+      autoAdvance: false
+      query: >-
+        Review the codebases below and produce a plan for them. Work from source
+        you have actually read: ask for files with READ: lines rather than
+        assuming what a file contains. You have no filesystem yourself; someone
+        else reads the file and hands you the text.
+
+
+        SCOPE
+
+
+        <root-one> - <one line on what it is>
+
+        <root-two> - <one line on what it is>
+
+
+        Review the working trees as they stand, including uncommitted work.
+
+
+        WHAT THESE CODEBASES SHARE
+
+
+        They share <N> same-path modules that have diverged: <list the ones that
+        matter, e.g. lib/auth, lib/session, middleware, the UI primitives, the
+        schema>. Only <M> files are byte-identical. Neither imports from the
+        other: there is no shared package.
+
+
+        So fixes are PAIRED, not shared. Where a defect exists in both, the item
+        carries both file paths and says whether the two need the same patch or
+        different ones. Never write an item that assumes one edit reaches both.
+        Tag every item BOTH, <ONE> or <TWO>.
+
+
+        STAGE 1 - AGREE THE PLAN
+
+
+        Produce exactly two things.
+
+
+        A DEBUG PLAN: the defects and risks actually present, ordered by
+        severity, each naming the file and the failure it causes at runtime.
+
+
+        A DEV PLAN CHECKLIST: the next steps, ordered so that work which
+        unblocks other work comes first.
+
+
+        Separately, and kept apart from both: name the modules where the fork
+        now costs more than it buys, as candidates for extraction into a shared
+        package later. Name them and say why. Do not plan the extraction.
+
+
+        Say plainly where you have not read enough to judge. An item marked "not
+        assessed" is worth more than a guess about a file nobody opened.
+
+
+        STAGE 2 - EXECUTE
+
+
+        Take the agreed plan and split it into units, highest severity first.
+        For a BOTH item, both sides are in the unit: read each side before
+        proposing anything for it, and write what fits that file rather than a
+        copy of the other one.
+
+
+        Do not refactor beyond the item. Do not extract shared modules. Do not
+        touch database migrations. Do not commit.
+
+
+        Report per item: the paths involved, what changed, and anything found
+        that contradicts the plan.
+
+
+        STAGE 3 - REVIEW
+
+
+        Review what stage 2 produced. Divide the angles between seats:
+        correctness of each fix; whether a paired edit is genuinely equivalent
+        across the two codebases; and what the change broke that nobody looked
+        at.
+
+
+        Report findings as file, line, what is wrong, and what happens at
+        runtime. Rank them. State which items you checked and found sound - a
+        review listing only faults cannot be told apart from one that ran out of
+        budget.
+
+
+        THROUGHOUT
+
+
+        Nothing is committed or pushed by any seat. Every stage stops at its own
+        approval gate; a gate passed for one stage does not carry the next. Each
+        agent names its own model in anything written into the transcript, never
+        a bare "me" - several models write into one transcript and the model
+        name is the only thing that says which one made a claim. Where a file
+        was truncated in what you were shown, say what you could not check
+        rather than filling the gap from memory.

@@ -146,6 +146,7 @@ packages/
   quota/quota-claude/            reads Claude Code's quota, publishes it
   client/ui-claude-quota/        the panel that shows it
 integration/                     six diffs for the host wiring, applied by hand
+examples/                        a saved run you can paste in, and how they work
 ```
 
 The two quota packages are independent: they import nothing from the council
@@ -195,6 +196,10 @@ before a first run: `fileRoots`, a comma-separated list of directories seats may
 ask to be shown files from — empty by default, and while it is empty no seat is
 even told it may ask; and `autoApprove`, which is off, and which only a person
 can turn on.
+
+A run you expect to repeat can be saved as a preset and started from a pill on
+the pipeline panel. [`examples/`](examples/) has a ready-to-paste one and the
+settings shape behind it.
 
 ## Requirements
 
