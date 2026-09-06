@@ -1,8 +1,8 @@
 diff --git a/packages/bundle/base/cordis.patch.yml b/packages/bundle/base/cordis.patch.yml
-index e9567d9206..422f2da078 100644
+index e9567d9206..794fbf806e 100644
 --- a/packages/bundle/base/cordis.patch.yml
 +++ b/packages/bundle/base/cordis.patch.yml
-@@ -215,12 +215,18 @@
+@@ -215,12 +215,24 @@
        name: '@deepseek-ai/dsh-tool-pwsh'
        disabled: !!js process.platform !== 'win32'
  
@@ -15,13 +15,19 @@ index e9567d9206..422f2da078 100644
 +    - id: tool-council
 +      name: '@deepseek-ai/dsh-tool-council'
 +
++    # Publishes Claude Code's quota for the browser panel. Boot reads only the
++    # status line's cache file, which is free; a live reading costs a request
++    # against the quota it reports, so it waits for a button press.
++    - id: quota-claude
++      name: '@deepseek-ai/dsh-quota-claude'
++
      - id: fs-observation-policy
        name: '@deepseek-ai/dsh-fs-observation-policy'
  
      - id: tool-fs
        name: '@deepseek-ai/dsh-tool-fs'
  
-@@ -401,19 +407,35 @@
+@@ -401,19 +413,35 @@
      # protection and the model would choose the request target. Search is a full
      # auxiliary model request with server-side retrieval, so this shipped DeepSeek
      # route gets 60s while the provider-neutral tool default remains 30s.

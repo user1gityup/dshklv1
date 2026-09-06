@@ -1,13 +1,20 @@
-# DSH Council Plugins
+# DSH Plugins
 
-Five plugins for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
-that turn it into a multi-agent workbench. Several models answer the same
-question independently, review each other, and vote — and then, if you want,
-split the agreed work across those same models and vote again on the code they
-each wrote. Nothing metered runs until you have seen what it will cost and
+Seven plugins for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
+
+Five of them turn it into a multi-agent workbench: several models answer the
+same question independently, review each other, and vote — and then, if you
+want, split the agreed work across those same models and vote again on the code
+they each wrote. Nothing metered runs until you have seen what it will cost and
 pressed Approve.
 
+The other two are a Claude Code quota panel. They have nothing to do with the
+council and depend on none of it; they are here because this is where the other
+panels live, and they install the same way.
+
 ## What's here
+
+### The council
 
 | Package | What it does |
 | --- | --- |
@@ -16,6 +23,13 @@ pressed Approve.
 | `@deepseek-ai/dsh-web-search-cli` | Routes web search to whichever provider is cheapest — an already-authenticated agent CLI, billed to its subscription, before a metered API key. |
 | `@deepseek-ai/dsh-client-ui-council-budget` | The browser surface: budget panel, the Approve control, council and swarm toggles beside the composer, the swarm roster, and a pipeline panel with saved runs. |
 | `@deepseek-ai/dsh-client-ui-openrouter-monitor` | Sidebar footer panel showing OpenRouter credit balance and per-model cost breakdown. |
+
+### Claude Code quota — independent of the above
+
+| Package | What it does |
+| --- | --- |
+| `@deepseek-ai/dsh-quota-claude` | Host half. Reads Claude Code's quota and publishes it through the `claude-quota` settings namespace, which the client already mirrors — no new wire method. A live reading costs a request against the quota it reports, so it never runs on a timer or at boot: boot publishes the status line's cache file, which is free, and a live call happens only when someone presses Refresh. |
+| `@deepseek-ai/dsh-client-ui-claude-quota` | The panel. Sits directly above the council budget panel and shows the provider's own percentages, worded as `/usage` worded them. Nothing here infers a ceiling from token counts. |
 
 ## The six tools
 
@@ -129,8 +143,14 @@ packages/
   client/ui-council-budget/      budget panel, Approve control, toggles,
                                  swarm roster, pipeline panel with saved runs
   client/ui-openrouter-monitor/  balance and per-model cost
+  quota/quota-claude/            reads Claude Code's quota, publishes it
+  client/ui-claude-quota/        the panel that shows it
 integration/                     six diffs for the host wiring, applied by hand
 ```
+
+The two quota packages are independent: they import nothing from the council
+and the council imports nothing from them. Install either family without the
+other.
 
 ## Install
 
@@ -143,6 +163,8 @@ cp -r packages/memory/agent-memory             "$DSH/packages/memory/agent-memor
 cp -r packages/web/web-search-cli              "$DSH/packages/web/web-search-cli"
 cp -r packages/client/ui-council-budget        "$DSH/packages/client/ui-council-budget"
 cp -r packages/client/ui-openrouter-monitor    "$DSH/packages/client/ui-openrouter-monitor"
+cp -r packages/quota/quota-claude              "$DSH/packages/quota/quota-claude"
+cp -r packages/client/ui-claude-quota          "$DSH/packages/client/ui-claude-quota"
 ```
 
 Then apply the host-side wiring in [`integration/`](integration/) — the bundle
@@ -188,10 +210,12 @@ Working and in daily use, with these known limits:
 - **Hosted seats can still fabricate.** The citation audit catches URLs that do
   not resolve and scores them down, and shared evidence removes most of the
   incentive. Neither catches a real page cited for a claim it does not make.
-- **Subscription spend is measurable; subscription *capacity* is not.** Consumption
-  is read from the CLIs' own local session logs, so throughput is real. No
-  provider exposes a remaining-quota figure, so percentages read against a budget
-  you set, never against an account limit this process can see.
+- **The council's own capacity figures are against a budget you set.**
+  Consumption is read from the CLIs' local session logs, so throughput is real,
+  but the council infers no account ceiling and states none. The quota panel is
+  the exception and is separate for that reason: it reports Claude Code's real
+  percentages because it asks `/usage` for them, at the cost of a request
+  against the quota, and only when you press Refresh.
 - **Cost figures are estimates.** Prompt size is assumed at 3x output; a
   cache-heavy workload costs considerably less than projected. A unit of swarm
   work is assumed to produce 6,000 output tokens, which a seat writing whole

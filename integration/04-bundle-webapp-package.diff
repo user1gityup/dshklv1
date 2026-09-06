@@ -1,13 +1,15 @@
 diff --git a/packages/bundle/web-app/package.json b/packages/bundle/web-app/package.json
-index 530192b0e4..7478ea3b58 100644
+index 530192b0e4..a7ab8aba2a 100644
 --- a/packages/bundle/web-app/package.json
 +++ b/packages/bundle/web-app/package.json
-@@ -56,12 +56,14 @@
+@@ -55,13 +55,16 @@
+     "@deepseek-ai/dsh-client-runtime": "workspace:^",
      "@deepseek-ai/dsh-client-ui-agent-preset": "workspace:^",
      "@deepseek-ai/dsh-client-ui-attachment": "workspace:^",
      "@deepseek-ai/dsh-client-ui-brand-official": "workspace:^",
      "@deepseek-ai/dsh-client-ui-commands": "workspace:^",
      "@deepseek-ai/dsh-client-ui-conversation": "workspace:^",
++    "@deepseek-ai/dsh-client-ui-claude-quota": "workspace:^",
      "@deepseek-ai/dsh-client-ui-cordis": "workspace:^",
 +    "@deepseek-ai/dsh-client-ui-council-budget": "workspace:^",
 +    "@deepseek-ai/dsh-client-ui-openrouter-monitor": "workspace:^",

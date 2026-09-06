@@ -1,14 +1,17 @@
 diff --git a/packages/bundle/web-app/cordis.patch.yml b/packages/bundle/web-app/cordis.patch.yml
-index 61151bdc65..8bad8103bf 100644
+index 61151bdc65..6b2a7ba35f 100644
 --- a/packages/bundle/web-app/cordis.patch.yml
 +++ b/packages/bundle/web-app/cordis.patch.yml
-@@ -288,12 +288,18 @@
+@@ -288,12 +288,21 @@
      - id: ui-plan
        name: '@deepseek-ai/dsh-client-ui-plan'
  
      - id: ui-user-questions
        name: '@deepseek-ai/dsh-client-ui-user-questions'
  
++    - id: ui-claude-quota
++      name: '@deepseek-ai/dsh-client-ui-claude-quota'
++
 +    - id: ui-council-budget
 +      name: '@deepseek-ai/dsh-client-ui-council-budget'
 +

@@ -1,5 +1,5 @@
 diff --git a/packages/bundle/base/package.json b/packages/bundle/base/package.json
-index 2096a64b75..fbe087969c 100644
+index 2096a64b75..be6a5187b4 100644
 --- a/packages/bundle/base/package.json
 +++ b/packages/bundle/base/package.json
 @@ -41,12 +41,13 @@
@@ -16,12 +16,14 @@ index 2096a64b75..fbe087969c 100644
      "@deepseek-ai/dsh-command-compact": "workspace:^",
      "@deepseek-ai/dsh-command-feedback": "workspace:^",
      "@deepseek-ai/dsh-command-goal": "workspace:^",
-@@ -88,12 +89,13 @@
+@@ -87,13 +88,15 @@
+     "@deepseek-ai/dsh-subagent": "workspace:^",
      "@deepseek-ai/dsh-subagent-fork-in-process": "workspace:^",
      "@deepseek-ai/dsh-subagent-spawn-in-process": "workspace:^",
      "@deepseek-ai/dsh-subprocess-local": "workspace:^",
      "@deepseek-ai/dsh-system-prompt": "workspace:^",
      "@deepseek-ai/dsh-jobs-local": "workspace:^",
++    "@deepseek-ai/dsh-quota-claude": "workspace:^",
      "@deepseek-ai/dsh-tool-call-timeout-policy": "workspace:^",
 +    "@deepseek-ai/dsh-tool-council": "workspace:^",
      "@deepseek-ai/dsh-token-meter": "workspace:^",
@@ -30,7 +32,7 @@ index 2096a64b75..fbe087969c 100644
      "@deepseek-ai/dsh-tool-fs-search": "workspace:^",
      "@deepseek-ai/dsh-tool-goal": "workspace:^",
      "@deepseek-ai/dsh-tool-pwsh": "workspace:^",
-@@ -110,12 +112,13 @@
+@@ -110,12 +113,13 @@
      "@deepseek-ai/dsh-tools": "workspace:^",
      "@deepseek-ai/dsh-typert-loader": "workspace:^",
      "@deepseek-ai/dsh-typert-registry": "workspace:^",
