@@ -95,16 +95,29 @@ export function SwarmRoster({ t, settings }: SwarmRosterProps): JSX.Element | nu
   }
 
   const active = roster.filter(worker => worker.enabled)
-  const meteredOn = active.some(worker => worker.seat.transport === 'openrouter')
+  // A free hosted worker bills nothing, so it must not raise the per-token
+  // warning the metered ones do.
+  const meteredOn = active.some(worker => worker.seat.transport === 'openrouter' && worker.seat.free !== true)
 
   return (
     <div className={css.panel} role="group" aria-label={t('swarm.title')}>
+      <label>
+        {t('swarm.mode')}{' '}
+        <select value={typeof section['swarmProfile'] === 'string' ? section['swarmProfile'] : ''}
+          disabled={Boolean(section['pendingSwarmId']) || Boolean(section['pipelineId'])}
+          onChange={(event) => { void settings.set('swarmProfile', event.target.value) }}>
+          <option value="" disabled>{t('swarm.chooseMode')}</option>
+          <option value="economy">{t('swarm.economy')}</option>
+          <option value="fastest">{t('swarm.fastest')}</option>
+        </select>
+      </label>
       <div className={css.head}>
         <strong className={css.title}>{t('swarm.title')}</strong>
         <span className={css.sub}>{t('swarm.hint')}</span>
       </div>
 
       {roster.map((worker) => {
+        const free = worker.seat.free === true
         const subscription = worker.seat.transport === 'cli'
         return (
           <div key={worker.seat.id} className={worker.enabled ? css.row : `${css.row} ${css.off}`}>
@@ -115,8 +128,8 @@ export function SwarmRoster({ t, settings }: SwarmRosterProps): JSX.Element | nu
                 onChange={() => { write(worker.seat.id, { enabled: !worker.enabled }) }}
               />
               <span>{worker.seat.name}</span>
-              <span className={subscription ? css.free : css.metered}>
-                {subscription ? t('swarm.subscription') : t('swarm.metered')}
+              <span className={free || subscription ? css.free : css.metered}>
+                {free ? t('swarm.free') : subscription ? t('swarm.subscription') : t('swarm.metered')}
               </span>
               {worker.seat.model === undefined || worker.seat.model === ''
                 ? null

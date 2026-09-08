@@ -1,50 +1,36 @@
 /**
- * Cost-ordered search routing.
+ * Search routing across lanes.
  *
  * The web seam picks exactly one provider: it refuses to choose when several
  * are usable, and hard-fails when a configured one is unavailable. Neither
  * behaviour gives fallback, so routing has to happen inside a single registered
  * provider. This is that provider.
  *
- * The order is by what a search actually costs the user, not by quality:
+ * Cost still leads:
  *
  *   1. included   — a subscription already paid for; a search adds nothing
  *   2. metered    — billed per query against a balance that can run dry
- *   3. unavailable— no credential, or a balance at zero
  *
- * A route that throws is demoted for a cooldown and the next one runs, so one
- * empty account cannot take web search down while another route has credit.
+ * Within a cost class the order comes from {@link TrafficDirector}, so two
+ * concurrent searches over two idle CLI lanes go one each instead of queueing
+ * behind the same binary. A lane that throws is demoted for a cooldown and the
+ * next one runs, so one empty account cannot take web search down while
+ * another lane has credit.
  */
 
 import type { WebSearchProvider, WebSearchRequest, WebSearchResult } from '@deepseek-ai/dsh-web'
+import { TrafficDirector } from './traffic.ts'
+import type { CostClass, Lane, TrafficPolicy } from './traffic.ts'
 
-/** What a route costs the user per search. */
-export type CostClass = 'included' | 'metered'
+export { TrafficDirector, TRAFFIC_POLICIES, readPolicy, COOLDOWN_MS } from './traffic.ts'
+export type { CostClass, Lane, LaneBlock, LaneStats, TrafficPolicy } from './traffic.ts'
 
-/** One candidate route. */
-export interface Route {
-  /** Stable name, used in diagnostics and the cooldown table. */
-  readonly name: string
-  /** What using it costs. */
-  readonly cost: CostClass
-  /** The provider that performs the search. */
-  readonly provider: WebSearchProvider
-  /**
-   * Optional balance probe, in USD. Returning 0 marks the route unusable
-   * without spending a request to discover that. Undefined means unknown,
-   * which is treated as usable — a probe failure must not disable a route.
-   */
-  readonly balanceUsd?: (() => Promise<number | undefined>) | undefined
-}
-
-/** How long a failing route stays demoted. */
-const COOLDOWN_MS = 5 * 60_000
-
-/** A route's recent failure, if any. */
-interface Failure {
-  readonly at: number
-  readonly reason: string
-}
+/**
+ * One candidate route.
+ *
+ * Kept as the package's outward name for a lane; `Lane` is the same shape.
+ */
+export type Route = Lane<WebSearchProvider>
 
 /** One attempt's outcome, for reporting. */
 export interface RouteAttempt {
@@ -52,10 +38,16 @@ export interface RouteAttempt {
   readonly cost: CostClass
   readonly ok: boolean
   readonly reason?: string | undefined
+  /** Wall time the attempt took, when it ran at all. */
+  readonly ms?: number | undefined
 }
 
 /**
  * Order routes by cost, then by declaration order within a class.
+ *
+ * The static ordering, unaware of load. Retained because it is the ordering a
+ * `cheapest` run gets, and because it is the one thing about routing that can
+ * be asserted without a director.
  * @param routes - the configured routes.
  * @returns routes sorted cheapest-first.
  */
@@ -64,17 +56,22 @@ export function byCost(routes: readonly Route[]): readonly Route[] {
   return [...routes].sort((a, b) => rank[a.cost] - rank[b.cost])
 }
 
-/** Search that tries each route in cost order until one answers. */
+/** Search that spreads across lanes, cheapest class first. */
 export class RoutingSearchProvider implements WebSearchProvider {
   readonly id: string
-  private readonly routes: readonly Route[]
-  private readonly failures = new Map<string, Failure>()
+  /** The traffic director, exposed so a host can read lane statistics. */
+  readonly traffic: TrafficDirector<WebSearchProvider>
   /** Attempts from the most recent search, exposed for diagnostics. */
   lastAttempts: readonly RouteAttempt[] = []
 
-  constructor(id: string, routes: readonly Route[]) {
+  constructor(id: string, routes: readonly Route[], policy: TrafficPolicy = 'balanced') {
     this.id = id
-    this.routes = byCost(routes)
+    this.traffic = new TrafficDirector<WebSearchProvider>(routes, policy)
+  }
+
+  /** Every configured route, cheapest class first. */
+  get routes(): readonly Route[] {
+    return byCost(this.traffic.all)
   }
 
   /**
@@ -82,40 +79,23 @@ export class RoutingSearchProvider implements WebSearchProvider {
    * @returns true when at least one route reports itself available.
    */
   available(): boolean {
-    return this.routes.some(route => route.provider.available())
-  }
-
-  /** Whether a route is currently demoted after a failure. */
-  private cooling(name: string, now: number): string | undefined {
-    const failure = this.failures.get(name)
-    if (failure === undefined) return undefined
-    if (now - failure.at >= COOLDOWN_MS) {
-      this.failures.delete(name)
-      return undefined
-    }
-    return failure.reason
+    return this.traffic.all.some(route => route.provider.available())
   }
 
   /**
-   * Search through the cheapest route that works.
+   * Search through the lane the director picks, falling through on failure.
    * @param request - the query and result bound.
    * @param signal - cancellation from the tool execution.
-   * @returns the first successful route's result.
+   * @returns the first successful lane's result.
    */
   async search(request: WebSearchRequest, signal?: AbortSignal): Promise<WebSearchResult> {
     const now = Date.now()
-    const attempts: RouteAttempt[] = []
+    // Blocked lanes are reported but never tried, so a caller reading
+    // lastAttempts still sees why a lane sat out.
+    const attempts: RouteAttempt[] = this.traffic.blocked(now)
+      .map(entry => ({ name: entry.name, cost: entry.cost, ok: false, reason: entry.reason }))
 
-    for (const route of this.routes) {
-      if (!route.provider.available()) {
-        attempts.push({ name: route.name, cost: route.cost, ok: false, reason: 'no credential' })
-        continue
-      }
-      const cooling = this.cooling(route.name, now)
-      if (cooling !== undefined) {
-        attempts.push({ name: route.name, cost: route.cost, ok: false, reason: `cooling down: ${cooling}` })
-        continue
-      }
+    for (const route of this.traffic.order(now)) {
       // A zero balance is knowable before spending a request, so check it
       // rather than discovering it through a failed search.
       if (route.balanceUsd !== undefined) {
@@ -125,17 +105,25 @@ export class RoutingSearchProvider implements WebSearchProvider {
           continue
         }
       }
+      const started = Date.now()
+      this.traffic.begin(route.name)
       try {
         const result = await route.provider.search(request, signal)
-        attempts.push({ name: route.name, cost: route.cost, ok: true })
+        const ms = Date.now() - started
+        this.traffic.settle(route.name, true, ms)
+        attempts.push({ name: route.name, cost: route.cost, ok: true, ms })
         this.lastAttempts = attempts
         return result
       } catch (error) {
+        const ms = Date.now() - started
         const reason = error instanceof Error ? error.message : String(error)
-        // An abort is the caller's decision, not a route fault; do not demote.
-        if (signal?.aborted === true) throw error
-        this.failures.set(route.name, { at: Date.now(), reason })
-        attempts.push({ name: route.name, cost: route.cost, ok: false, reason })
+        // An abort is the caller's decision, not a lane fault; do not demote.
+        if (signal?.aborted === true) {
+          this.traffic.settle(route.name, true, ms)
+          throw error
+        }
+        this.traffic.settle(route.name, false, ms, reason)
+        attempts.push({ name: route.name, cost: route.cost, ok: false, reason, ms })
       }
     }
 

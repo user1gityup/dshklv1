@@ -15,9 +15,21 @@ import type { ModelPrice } from './estimate.ts'
 import type { SubTask } from './decompose.ts'
 import { executionWaves } from './decompose.ts'
 
-/** How a provider is paid for. */
+/**
+ * How a provider is paid for.
+ *
+ * `free` and `included` both add nothing to a bill, and collapsing them was
+ * the reason a swarm could not be told to run cheaply: a subscription seat and
+ * a local-proxy seat sorted identically, so the tie fell to whichever name
+ * came first alphabetically and the paid seat took the work. They are separate
+ * because the scarce resource is different — the subscription's quota is spent
+ * by an `included` unit and is the thing a monthly budget runs out of, while a
+ * `free` unit spends nothing but wall clock.
+ */
 export type CostClass =
-  /** Absorbed by a subscription already paid for; no metered cost. */
+  /** No metered cost and no subscription quota: a free tier or a local proxy. */
+  | 'free'
+  /** Absorbed by a subscription already paid for; no metered cost, but its quota is finite. */
   | 'included'
   /** Billed per token. */
   | 'metered'
@@ -43,6 +55,7 @@ export interface TaskCost {
 
 /** Estimated cost of a whole decomposition. */
 export interface ExecutionEstimate {
+  readonly countsCalls?: boolean | undefined
   readonly tasks: readonly TaskCost[]
   /** Units running concurrently, in execution order. */
   readonly waveSizes: readonly number[]
@@ -50,6 +63,8 @@ export interface ExecutionEstimate {
   readonly meteredUsd: number
   /** Units carried by a subscription rather than metered spend. */
   readonly includedCount: number
+  /** Units that cost neither money nor subscription quota. */
+  readonly freeCount: number
   /** Units whose provider carries no price, so they are missing from the total. */
   readonly unpricedCount: number
   /** Caveats the reader must weigh before trusting the figure. */
@@ -87,7 +102,7 @@ function priceTask(
     costClass: provider.costClass,
     outputTokens: TOKENS_PER_TASK,
   }
-  if (provider.costClass === 'included') return base
+  if (provider.costClass !== 'metered') return base
   const price = provider.model === undefined ? undefined : pricing.get(provider.model)
   if (price === undefined) return base
   const usd = TOKENS_PER_TASK * price.completion + TOKENS_PER_TASK * PROMPT_RATIO * price.prompt
@@ -121,6 +136,7 @@ export function estimateExecution(
 
   const meteredUsd = priced.reduce((sum, task) => sum + (task.usd ?? 0), 0)
   const includedCount = priced.filter(task => task.costClass === 'included').length
+  const freeCount = priced.filter(task => task.costClass === 'free').length
   const unpricedCount = priced.filter(task => task.costClass === 'metered' && task.usd === undefined).length
 
   const caveats: string[] = [
@@ -132,6 +148,12 @@ export function estimateExecution(
   if (includedCount > 0) {
     caveats.push(`${String(includedCount)} unit(s) run on a subscription and cost nothing metered, but still consume that subscription's quota`)
   }
+  // The dollar total is $0 either way, so without this line a run carried by a
+  // free tier and a run carried by a subscription read identically at the gate
+  // — and only one of them is spending the thing a monthly budget runs out of.
+  if (freeCount > 0) {
+    caveats.push(`${String(freeCount)} unit(s) run on a free seat: no metered cost and no subscription quota, but a free tier is slower and fails more often`)
+  }
   const waves = executionWaves(tasks)
   if (waves.length > 0 && Math.max(...waves.map(wave => wave.length)) > 4) {
     caveats.push('a wide wave runs many workers at once: spend arrives faster than a sequential run, even though the total is the same')
@@ -142,6 +164,7 @@ export function estimateExecution(
     waveSizes: waves.map(wave => wave.length),
     meteredUsd,
     includedCount,
+    freeCount,
     unpricedCount,
     caveats,
   }
@@ -153,16 +176,20 @@ export function estimateExecution(
  * @returns markdown lines.
  */
 export function renderExecutionEstimate(estimate: ExecutionEstimate): readonly string[] {
+  const unit = estimate.countsCalls === true ? 'seat call(s)' : 'unit(s)'
   const out: string[] = [
-    `**Execution estimate** — ${String(estimate.tasks.length)} unit(s) in ${String(estimate.waveSizes.length)} wave(s) of ${estimate.waveSizes.join(', ')}`,
+    `**Execution estimate** — ${String(estimate.tasks.length)} ${unit} in ${String(estimate.waveSizes.length)} wave(s) of ${estimate.waveSizes.join(', ')}`,
     '',
     `- Metered cost: **$${estimate.meteredUsd.toFixed(4)}**`,
   ]
+  if (estimate.freeCount > 0) {
+    out.push(`- On a free seat (no cost, no quota): ${String(estimate.freeCount)} ${unit}`)
+  }
   if (estimate.includedCount > 0) {
-    out.push(`- On subscription (no metered cost): ${String(estimate.includedCount)} unit(s)`)
+    out.push(`- On subscription (no metered cost, but spends quota): ${String(estimate.includedCount)} ${unit}`)
   }
   if (estimate.unpricedCount > 0) {
-    out.push(`- Unpriced, so missing from the total: ${String(estimate.unpricedCount)} unit(s)`)
+    out.push(`- Unpriced, so missing from the total: ${String(estimate.unpricedCount)} ${unit}`)
   }
   out.push('')
   for (const caveat of estimate.caveats) out.push(`> ${caveat}`)

@@ -17,7 +17,11 @@ import { gatherEvidence, gatherRequested, parseSearchRequests, researchPrompt } 
 import type { FileSeam } from './files.ts'
 import { gatherFiles, parseReadRequests, readRequestSection } from './files.ts'
 import type { Evidence, SearchSeam } from './evidence.ts'
-import { askSeat } from './seats.ts'
+import { askSeat, probeSeat } from './seats.ts'
+import { failedSeats } from './runs.ts'
+import type { RunRecord } from './runs.ts'
+import { mergePlan } from './merge.ts'
+import type { PlanMerge } from './merge.ts'
 
 /** One seat's review of the drafts, with its vote. */
 export interface SeatReview {
@@ -111,8 +115,20 @@ export interface CouncilResult {
   readonly planReviews?: readonly SeatReview[] | undefined
   /** How the winning plan won. */
   readonly planVerdict?: Verdict | undefined
+  /** Attributed additions after the plan vote; the winner remains the author. */
+  readonly planMerge?: PlanMerge | undefined
   /** Why the Approve control could not be offered, when it could not. */
   readonly issueProblem?: string | undefined
+  /** The stored run this result belongs to, once one has been filed. */
+  readonly runId?: string | undefined
+  /**
+   * The shared evidence exactly as the drafts saw it, kept so an amendment
+   * can put a recovered seat in front of the same sources rather than a fresh
+   * search that would make its answer incomparable.
+   */
+  readonly evidenceBlock?: string | undefined
+  /** What an amendment recovered, when this result came from one. */
+  readonly amended?: Amendment | undefined
   /** The agreed approach, when a planning round ran or one was supplied. */
   readonly plan?: string | undefined
   /** The seat that produced the plan, when the council generated it. */
@@ -196,6 +212,14 @@ export interface RunOptions {
    * where seats state their queries costs anything.
    */
   readonly seatResearch?: boolean | undefined
+  /**
+   * Searches the research round runs at once.
+   *
+   * The seam routes across two authenticated CLI lanes, so more than one
+   * search can be in the air without either subscription queueing. Undefined
+   * takes the module default.
+   */
+  readonly researchConcurrency?: number | undefined
   /**
    * File seam used to serve the paths seats ask for. A seat never reads for
    * itself; it names a path and this reads it, or refuses.
@@ -282,21 +306,35 @@ ${query}`
 /**
  * Choose which seat writes the plan.
  *
- * Preference order: an explicitly configured planner, then the first enabled
- * OpenRouter seat (a metered call whose cost is known), then the first enabled
- * seat of any kind. A CLI seat is the last resort because its cost is opaque.
+ * Preference order: an explicitly configured planner, then the seat whose plan
+ * won the vote, then the first enabled OpenRouter seat (a metered call whose
+ * cost is known), then the first enabled seat of any kind.
+ *
+ * The winner outranks the cost-transparency preference because the two are
+ * answering different questions. Reaching for the seat with the clearest price
+ * is the right default when nobody has been chosen; once a council has settled
+ * on a plan, the seat that wrote it holds the reasoning behind it, and handing
+ * the decomposition to a different seat means re-deriving that reasoning from
+ * prose — the cheapest call producing the most expensive graph. A configured
+ * planner still wins, because that is the user saying so outright.
  * @param seats - the active roster.
  * @param preferred - explicitly configured planner seat id.
+ * @param winner - seat whose plan the council voted for, when one won.
  * @returns the planning seat, or undefined when the roster is empty.
  */
 export function choosePlanner(
   seats: readonly SeatConfig[],
   preferred: string | undefined,
+  winner?: string,
 ): SeatConfig | undefined {
   const enabled = seats.filter(seat => seat.enabled)
   if (preferred !== undefined) {
     const named = enabled.find(seat => seat.id === preferred)
     if (named !== undefined) return named
+  }
+  if (winner !== undefined) {
+    const won = enabled.find(seat => seat.id === winner)
+    if (won !== undefined) return won
   }
   return enabled.find(seat => seat.transport === 'openrouter') ?? enabled[0]
 }
@@ -310,14 +348,16 @@ export function choosePlanner(
  * transient failure on the cheapest seat fall through to the next one.
  * @param seats - the active roster.
  * @param preferred - explicitly configured planner seat id.
+ * @param winner - seat whose plan the council voted for, when one won.
  * @returns candidate planners in the order they should be tried.
  */
 export function plannerOrder(
   seats: readonly SeatConfig[],
   preferred: string | undefined,
+  winner?: string,
 ): readonly SeatConfig[] {
   const enabled = seats.filter(seat => seat.enabled)
-  const first = choosePlanner(enabled, preferred)
+  const first = choosePlanner(enabled, preferred, winner)
   if (first === undefined) return []
   return [first, ...enabled.filter(seat => seat.id !== first.id)]
 }
@@ -439,6 +479,25 @@ async function reporting(
   return reply
 }
 
+/**
+ * Failures that mean a seat's backend is absent, not that the model refused.
+ *
+ * The distinction decides whether calling the seat again is worth anything. A
+ * model that ran out of context may well answer the next round; a proxy that
+ * is not listening will refuse every round, and each refusal costs the round
+ * its full retry window.
+ */
+const UNREACHABLE = /ECONNREFUSED|connection refused|ENOTFOUND|EAI_AGAIN|ECONNRESET|socket hang up|fetch failed/i
+
+/**
+ * Whether a seat failure means its backend is not there.
+ * @param error - the seat's failure text, when it failed.
+ * @returns true when the backend, not the model, is the fault.
+ */
+export function unreachableError(error: string | undefined): boolean {
+  return error !== undefined && UNREACHABLE.test(error)
+}
+
 /** Run a set of async thunks in parallel or one at a time. */
 async function fanOut<T>(tasks: readonly (() => Promise<T>)[], sequential: boolean): Promise<T[]> {
   if (!sequential) return await Promise.all(tasks.map(task => task()))
@@ -534,6 +593,168 @@ export function tally(
   }
 }
 
+/** What one amendment of a stored run changed. */
+export interface Amendment {
+  /** The run that was amended. */
+  readonly runId: string
+  /** Which attempt this was, counting from one. */
+  readonly attempt: number
+  /** Seats that failed before and answered this time. */
+  readonly recoveredDrafts: readonly SeatId[]
+  /** Seats whose review was recovered. */
+  readonly recoveredReviews: readonly SeatId[]
+  /** Seats that failed again. */
+  readonly stillFailing: readonly SeatId[]
+  /**
+   * Seats whose vote was cast before the recovered drafts existed.
+   *
+   * Their reviews are kept — re-asking every seat is the whole cost an
+   * amendment exists to avoid — but a vote taken on three answers is not a
+   * vote on five, and a report that hid that would be claiming a judgement
+   * nobody made.
+   */
+  readonly staleReviews: readonly SeatId[]
+}
+
+/** What {@link amendCouncil} needs to fill a stored run's holes. */
+export interface AmendOptions {
+  readonly record: RunRecord
+  /** The current roster; a seat missing from it cannot be re-asked. */
+  readonly seats: readonly SeatConfig[]
+  readonly apiKey?: string | undefined
+  readonly signal?: AbortSignal | undefined
+  readonly timeoutMs: number
+  readonly sequential?: boolean | undefined
+  readonly memory?: { file?: string | undefined; text?: string | undefined } | undefined
+  readonly web?: (SearchSeam & Partial<FetchSeam>) | undefined
+  readonly webMaxResults?: number | undefined
+  readonly onEvent?: ((event: CouncilEvent) => void) | undefined
+}
+
+/**
+ * Re-ask only the seats that failed in a stored run, then re-tally.
+ *
+ * This is the cheap half of a council: no planning round, no re-drafting from
+ * the seats that answered, no second approval — the approval that paid for the
+ * run still stands, and the work here is bounded by how many seats failed.
+ * @param options - the stored run and how to reach its seats.
+ * @returns a complete result, with {@link Amendment} saying what changed.
+ */
+export async function amendCouncil(options: AmendOptions): Promise<CouncilResult> {
+  const record = options.record
+  const active = options.seats.filter(seat => seat.enabled)
+  const sequential = options.sequential === true
+  const spend = { cost: 0 }
+  const emit = options.onEvent
+  const holes = failedSeats(record)
+  const seatOf = (id: SeatId): SeatConfig | undefined => active.find(seat => seat.id === id)
+  const evidence: Evidence | undefined = record.evidenceBlock === undefined
+    ? undefined
+    : { block: record.evidenceBlock, urls: record.evidenceUrls ?? [] }
+  const online = (options.webMaxResults ?? 0) > 0
+
+  // The same reachability check the full run makes: a seat whose backend is
+  // not listening would otherwise spend the amendment's whole timeout proving
+  // it again.
+  const dead = new Map<SeatId, string>()
+  const probes = await Promise.all(active.map(async seat => [seat.id, await probeSeat(seat)] as const))
+  for (const [id, problem] of probes) {
+    if (problem !== undefined) dead.set(id, problem)
+  }
+  const reAsk = async (seat: SeatConfig, round: CouncilEvent['round'], prompt: string): Promise<SeatReply> => {
+    const why = dead.get(seat.id)
+    if (why !== undefined) return { seat: seat.id, text: '', error: `not called — ${why}`, ms: 0 }
+    const ask = askSeat(
+      seat, prompt, options.apiKey, options.signal, options.timeoutMs, options.memory, options.webMaxResults,
+    )
+    return await reporting(seat, round, ask, spend, emit)
+  }
+
+  // ── refill the draft round ──
+  const redrafted = await fanOut(
+    holes.drafts.map(id => async (): Promise<SeatReply> => {
+      const seat = seatOf(id)
+      if (seat === undefined) return { seat: id, text: '', error: 'seat is no longer in the roster', ms: 0 }
+      return await reAsk(seat, 'draft', draftPrompt(record.query, record.plan, evidence, seat.transport === 'openrouter', online))
+    }),
+    sequential,
+  )
+  const byId = new Map(redrafted.map(draft => [draft.seat, draft]))
+  const drafts = record.drafts.map(draft => byId.get(draft.seat) ?? draft)
+  const usable = (reply: SeatReply): boolean => reply.error === undefined && reply.text !== ''
+  const recoveredDrafts = redrafted.filter(usable).map(draft => draft.seat)
+
+  // ── refill the review round ──
+  // Reviews are re-asked against the drafts as they stand now, recovered ones
+  // included, which is exactly why they are worth re-asking rather than
+  // carrying forward.
+  const reReviewed = await fanOut(
+    holes.reviews.map(id => async (): Promise<SeatReview> => {
+      const seat = seatOf(id)
+      if (seat === undefined) return { seat: id, confidence: 0, critique: '', error: 'seat is no longer in the roster', ms: 0 }
+      const reply = await reAsk(seat, 'review', reviewPrompt(record.query, drafts, active))
+      if (reply.error !== undefined) {
+        return { seat: seat.id, confidence: 0, critique: '', error: reply.error, ms: reply.ms }
+      }
+      const parsed = parseReview(reply.text, active)
+      return {
+        seat: seat.id,
+        confidence: parsed.confidence,
+        critique: parsed.critique,
+        ms: reply.ms,
+        ...parsed.vote === undefined ? {} : { vote: parsed.vote },
+      }
+    }),
+    sequential,
+  )
+  const reviewById = new Map(reReviewed.map(review => [review.seat, review]))
+  const reviews = record.reviews.map(review => reviewById.get(review.seat) ?? review)
+  const recoveredReviews = reReviewed.filter(review => review.error === undefined).map(review => review.seat)
+  const stillFailing = [
+    ...redrafted.filter(draft => !usable(draft)).map(draft => draft.seat),
+    ...reReviewed.filter(review => review.error !== undefined).map(review => review.seat),
+  ]
+  const staleReviews = recoveredDrafts.length === 0
+    ? []
+    : record.reviews
+      .filter(review => review.error === undefined && !reviewById.has(review.seat))
+      .map(review => review.seat)
+
+  const fetchSeam = typeof options.web?.fetch === 'function' ? options.web as FetchSeam : undefined
+  const audits = await Promise.all(
+    drafts.filter(usable).map(async draft => auditDraft(
+      draft.seat,
+      draft.text,
+      [...evidence?.urls ?? [], ...draft.citedUrls ?? []],
+      fetchSeam,
+      options.signal,
+    )),
+  )
+  const penalties = new Map(audits.map(audit => [audit.seat, audit.penalty]))
+  const verdict = tally(reviews, drafts, penalties)
+  const winning = verdict.winner === undefined ? undefined : drafts.find(draft => draft.seat === verdict.winner)
+  return {
+    phase: 'full',
+    audits,
+    ...record.plan === undefined ? {} : { plan: record.plan },
+    ...record.evidenceUrls === undefined ? {} : { evidenceUrls: record.evidenceUrls },
+    query: record.query,
+    seats: active,
+    drafts,
+    reviews,
+    verdict,
+    answer: winning?.text ?? '',
+    amended: {
+      runId: record.id,
+      attempt: record.amendments + 1,
+      recoveredDrafts,
+      recoveredReviews,
+      stillFailing,
+      staleReviews,
+    },
+  }
+}
+
 /**
  * Run one full council: draft round, review round, tally.
  * @param options - query, roster, credentials, and limits.
@@ -573,6 +794,44 @@ export async function runCouncil(options: RunOptions): Promise<CouncilResult> {
     }
   }
 
+  // ── seat reachability ──
+  // A seat whose backend is not listening still costs the round its full
+  // retry window: measured, `claude -p` against a stopped local proxy took
+  // 180s to return "Connection refused", and because every round waits for
+  // every seat, one dead seat set the wall time for the plan round AND the
+  // review round — 360s of a 457s run that produced nothing. A loopback
+  // connect answers in a millisecond and says the same thing, so the seat is
+  // marked dead before the first round rather than during it.
+  //
+  // Dead is not disabled: the seat still appears in the report, still shows
+  // its failure, and still counts as a seat the user configured. It is only
+  // never waited on.
+  const dead = new Map<SeatId, string>()
+  const probes = await Promise.all(active.map(async seat => [seat.id, await probeSeat(seat)] as const))
+  for (const [id, problem] of probes) {
+    if (problem !== undefined) dead.set(id, problem)
+  }
+
+  /**
+   * Ask a seat, unless its backend has already proved absent this run.
+   *
+   * The breaker is per-run, not per-process: a proxy started between two runs
+   * must be picked up by the next one without restarting the host.
+   */
+  const ask = async (
+    seat: SeatConfig,
+    round: CouncilEvent['round'],
+    call: () => Promise<SeatReply>,
+  ): Promise<SeatReply> => {
+    const why = dead.get(seat.id)
+    if (why !== undefined) {
+      return { seat: seat.id, text: '', error: `not called — ${why}`, ms: 0 }
+    }
+    const reply = await reporting(seat, round, call(), spend, emit)
+    if (unreachableError(reply.error)) dead.set(seat.id, reply.error ?? 'its backend is unreachable')
+    return reply
+  }
+
   // ── planning round ──
   let plan = options.plan
   let planSeat: SeatId | undefined
@@ -580,19 +839,14 @@ export async function runCouncil(options: RunOptions): Promise<CouncilResult> {
   let planDrafts: SeatReply[] = []
   let planReviews: SeatReview[] = []
   let planVerdict: Verdict | undefined
+  let planMerge: PlanMerge | undefined
   if (plan === undefined && options.skipPlan !== true && options.planMode === 'council' && active.length > 1) {
     // Every seat proposes a plan, then the council votes on which to follow.
     // Costs a full extra round, and buys a plan the council actually agreed
     // rather than one the cheapest seat happened to write.
     planDrafts = await fanOut(
       active.map(seat => () =>
-        reporting(
-          seat,
-          'plan',
-          askSeat(seat, planPrompt(options.query), options.apiKey, options.signal, options.timeoutMs, options.memory),
-          spend,
-          emit,
-        )),
+        ask(seat, 'plan', () => askSeat(seat, planPrompt(options.query), options.apiKey, options.signal, options.timeoutMs, options.memory))),
       sequential,
     )
     for (const draft of planDrafts) {
@@ -604,20 +858,14 @@ export async function runCouncil(options: RunOptions): Promise<CouncilResult> {
     if (usablePlans.length > 1) {
       planReviews = await fanOut(
         active.map(seat => async (): Promise<SeatReview> => {
-          const reply = await reporting(
+          const reply = await ask(seat, 'review', () => askSeat(
             seat,
-            'review',
-            askSeat(
-              seat,
-              reviewPrompt(options.query, planDrafts, active),
-              options.apiKey,
-              options.signal,
-              options.timeoutMs,
-              options.memory,
-            ),
-            spend,
-            emit,
-          )
+            reviewPrompt(options.query, planDrafts, active),
+            options.apiKey,
+            options.signal,
+            options.timeoutMs,
+            options.memory,
+          ))
           if (reply.error !== undefined) {
             return { seat: seat.id, confidence: 0, critique: '', error: reply.error, ms: reply.ms }
           }
@@ -639,17 +887,17 @@ export async function runCouncil(options: RunOptions): Promise<CouncilResult> {
     if (chosen !== undefined && chosen.text !== '') {
       plan = chosen.text
       planSeat = chosen.seat
+      if (planVerdict.winner !== undefined && usablePlans.length > 1) {
+        planMerge = await mergePlan(options.query, chosen, usablePlans, active,
+          (seat, prompt) => ask(seat, 'plan', () => askSeat(seat, prompt, options.apiKey, options.signal, options.timeoutMs, options.memory)),
+          sequential)
+        plan = planMerge.plan
+      }
     }
   }
   if (plan === undefined && options.skipPlan !== true) {
     for (const planner of plannerOrder(active, options.plannerSeat)) {
-      const reply = await reporting(
-        planner,
-        'plan',
-        askSeat(planner, planPrompt(options.query), options.apiKey, options.signal, options.timeoutMs, options.memory),
-        spend,
-        emit,
-      )
+      const reply = await ask(planner, 'plan', () => askSeat(planner, planPrompt(options.query), options.apiKey, options.signal, options.timeoutMs, options.memory))
       if (reply.error === undefined && reply.text !== '') {
         plan = reply.text
         planSeat = planner.id
@@ -672,6 +920,7 @@ export async function runCouncil(options: RunOptions): Promise<CouncilResult> {
       planSeat,
       ...planFailures.length === 0 ? {} : { planFailures },
       ...planDrafts.length === 0 ? {} : { planDrafts, planReviews, planVerdict },
+      ...planMerge === undefined ? {} : { planMerge },
       budget,
       estimate: options.estimate,
       spentUsd: spendBetween(before, await readBalance(options.apiKey, options.signal)),
@@ -703,13 +952,7 @@ export async function runCouncil(options: RunOptions): Promise<CouncilResult> {
   if ((canSearch || canRead) && active.length > 0) {
     const asks = await fanOut(
       active.map(seat => () =>
-        reporting(
-          seat,
-          'plan',
-          askSeat(seat, researchPrompt(options.query, plan, canRead ? readRequestSection(fileRoots) : ''), options.apiKey, options.signal, options.timeoutMs, options.memory),
-          spend,
-          emit,
-        )),
+        ask(seat, 'plan', () => askSeat(seat, researchPrompt(options.query, plan, canRead ? readRequestSection(fileRoots) : ''), options.apiKey, options.signal, options.timeoutMs, options.memory))),
       sequential,
     )
     const answered = asks.filter(ask => ask.error === undefined && ask.text !== '')
@@ -718,7 +961,7 @@ export async function runCouncil(options: RunOptions): Promise<CouncilResult> {
         .map(ask => ({ seat: ask.seat, queries: parseSearchRequests(ask.text) }))
         .filter(request => request.queries.length > 0)
       if (requests.length > 0) {
-        researched = await gatherRequested(options.web, requests, options.signal)
+        researched = await gatherRequested(options.web, requests, options.signal, options.researchConcurrency)
       }
     }
     if (canRead) {
@@ -757,13 +1000,7 @@ export async function runCouncil(options: RunOptions): Promise<CouncilResult> {
     }
   const drafts = await fanOut(
     active.map(seat => () =>
-      reporting(
-        seat,
-        'draft',
-        askSeat(seat, draftPrompt(options.query, plan, evidence, seat.transport === 'openrouter', online), options.apiKey, options.signal, options.timeoutMs, options.memory, options.webMaxResults),
-        spend,
-        emit,
-      )),
+      ask(seat, 'draft', () => askSeat(seat, draftPrompt(options.query, plan, evidence, seat.transport === 'openrouter', online), options.apiKey, options.signal, options.timeoutMs, options.memory, options.webMaxResults))),
     sequential,
   )
 
@@ -772,7 +1009,7 @@ export async function runCouncil(options: RunOptions): Promise<CouncilResult> {
     return {
       phase: 'full',
       ...planFailures.length === 0 ? {} : { planFailures },
-      ...evidence === undefined ? {} : { evidenceUrls: evidence.urls },
+      ...evidence === undefined ? {} : { evidenceUrls: evidence.urls, evidenceBlock: evidence.block },
       plan,
       planSeat,
       budget,
@@ -792,21 +1029,15 @@ export async function runCouncil(options: RunOptions): Promise<CouncilResult> {
     ? []
     : (await fanOut(
       active.map(seat => async (): Promise<SeatReview> => {
-        const reply = await reporting(
+        const reply = await ask(seat, 'review', () => askSeat(
           seat,
-          'review',
-          askSeat(
-            seat,
-            reviewPrompt(options.query, drafts, active),
-            options.apiKey,
-            options.signal,
-            options.timeoutMs,
-            options.memory,
-            options.webMaxResults,
-          ),
-          spend,
-          emit,
-        )
+          reviewPrompt(options.query, drafts, active),
+          options.apiKey,
+          options.signal,
+          options.timeoutMs,
+          options.memory,
+          options.webMaxResults,
+        ))
         if (reply.error !== undefined) {
           return { seat: seat.id, confidence: 0, critique: '', error: reply.error, ms: reply.ms }
         }
@@ -848,7 +1079,8 @@ export async function runCouncil(options: RunOptions): Promise<CouncilResult> {
   return {
     phase: 'full',
     ...planFailures.length === 0 ? {} : { planFailures },
-    ...evidence === undefined ? {} : { evidenceUrls: evidence.urls },
+    ...planMerge === undefined ? {} : { planMerge },
+    ...evidence === undefined ? {} : { evidenceUrls: evidence.urls, evidenceBlock: evidence.block },
     audits,
     plan,
     planSeat,

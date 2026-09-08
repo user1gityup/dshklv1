@@ -5,6 +5,7 @@ export type BudgetKey =
   | 'panel.title'
   | 'seats.title'
   | 'seats.metered'
+  | 'seats.free'
   | 'seats.subscription'
   | 'capacity.title'
   | 'capacity.perRun'
@@ -47,7 +48,12 @@ export type BudgetKey =
   | 'swarm.toggleHint'
   | 'swarm.title'
   | 'swarm.hint'
+  | 'swarm.mode'
+  | 'swarm.chooseMode'
+  | 'swarm.economy'
+  | 'swarm.fastest'
   | 'swarm.subscription'
+  | 'swarm.free'
   | 'swarm.metered'
   | 'swarm.noneEnabled'
   | 'pipeline.title'
@@ -59,6 +65,10 @@ export type BudgetKey =
   | 'pipeline.presets'
   | 'pipeline.restart'
   | 'pipeline.placeholder'
+  | 'pipeline.minimize'
+  | 'pipeline.expand'
+  | 'pipeline.failed'
+  | 'pipeline.idle'
   | 'swarm.meteredWarning'
   | 'approve.always'
   | 'approve.alwaysHint'
@@ -73,6 +83,7 @@ export const en: Record<BudgetKey, string> = {
   'panel.title': 'Council Budget',
   'seats.title': 'Seats',
   'seats.metered': 'metered',
+  'seats.free': 'free',
   'seats.subscription': 'subscription',
   'capacity.title': 'Capacity',
   'capacity.perRun': 'Est. cost per full run',
@@ -109,21 +120,30 @@ export const en: Record<BudgetKey, string> = {
   'approve.discard': 'Discard',
   'approve.awaitingMessage': 'Approved. Send a message to run the council.',
   'pipeline.title': 'Pipeline',
-  'pipeline.hint': 'Council agrees the approach, the swarm runs it, the council reviews it. One stage per press.',
+  'pipeline.hint': 'Council agrees the approach, seats write competing versions, the swarm builds the one you pick, the council reviews it. One stage per press.',
   'pipeline.run': 'Run pipeline',
   'pipeline.continue': 'Continue',
   'pipeline.held': 'Held on quota — resuming in',
   'pipeline.resumeNow': 'Resume now',
   'pipeline.presets': 'Saved runs',
   'pipeline.restart': 'Start over',
+  'pipeline.failed': 'The prompt did not reach the session — nothing was sent. Reason:',
   'pipeline.placeholder': 'What should the chain work on?',
+  'pipeline.minimize': 'Minimize',
+  'pipeline.expand': 'Expand',
+  'pipeline.idle': 'idle',
   'swarm.toggleTitle': 'Swarm',
   'swarm.toggleLabel': 'Run approved work as a swarm',
   'swarm.toggleOn': 'Approved work is split across your seats and run in waves',
   'swarm.toggleHint': 'Split a request across your seats and run it in waves. They read, search and report.',
   'swarm.title': 'Swarm roster',
-  'swarm.hint': 'Who does what. Your council seats are the workers; subscription seats are preferred, so what you already pay for carries the load.',
+  'swarm.hint': 'Economy contests each unit with free workers. Fastest uses paid workers in parallel. Both require paid review.',
+  'swarm.mode': 'Swarm mode',
+  'swarm.chooseMode': 'Choose mode',
+  'swarm.economy': 'Economy — free contestants, paid review',
+  'swarm.fastest': 'Fastest — paid workers in parallel',
   'swarm.subscription': 'subscription',
+  'swarm.free': 'free',
   'swarm.metered': 'metered',
   'swarm.noneEnabled': 'No worker is enabled, so nothing can run.',
   'swarm.meteredWarning': 'A metered worker is enabled: units it takes are billed per token.',
@@ -140,6 +160,7 @@ export const zh: Record<BudgetKey, string> = {
   'panel.title': '议会预算',
   'seats.title': '席位',
   'seats.metered': '按量计费',
+  'seats.free': '免费',
   'seats.subscription': '订阅制',
   'capacity.title': '容量',
   'capacity.perRun': '每次完整运行的预估成本',
@@ -176,21 +197,30 @@ export const zh: Record<BudgetKey, string> = {
   'approve.discard': '丢弃',
   'approve.awaitingMessage': '已批准。发送一条消息即可运行议会。',
   'pipeline.title': '流水线',
-  'pipeline.hint': '议会定方案，蜂群执行，议会复核。每次按下推进一个阶段。',
+  'pipeline.hint': '议会定方案，各席各写一版，蜂群按你所选者构建，议会复核。每次按下推进一个阶段。',
   'pipeline.run': '运行流水线',
   'pipeline.continue': '继续',
   'pipeline.held': '额度用尽，暂停中，恢复倒计时',
   'pipeline.resumeNow': '立即恢复',
   'pipeline.presets': '已保存的运行',
   'pipeline.restart': '重新开始',
+  'pipeline.failed': '提示未送达会话 — 未发送任何内容。原因：',
   'pipeline.placeholder': '这条链要处理什么？',
+  'pipeline.minimize': '最小化',
+  'pipeline.expand': '展开',
+  'pipeline.idle': '空闲',
   'swarm.toggleTitle': '蜂群',
   'swarm.toggleLabel': '以蜂群方式执行已批准的工作',
   'swarm.toggleOn': '已批准的工作将按波次分配给你配置的席位',
   'swarm.toggleHint': '将请求拆分给你的席位并按波次运行。它们会读取、搜索并汇报。',
   'swarm.title': '蜂群名单',
-  'swarm.hint': '谁负责什么。优先使用订阅工作者，让已付费的席位承担主要工作。',
+  'swarm.hint': '经济模式由免费工作者竞争每个单元；最快模式由付费工作者并行执行。两种模式均要求付费审查。',
+  'swarm.mode': '群组模式',
+  'swarm.chooseMode': '选择模式',
+  'swarm.economy': '经济模式 — 免费竞争，付费审查',
+  'swarm.fastest': '最快模式 — 付费工作者并行执行',
   'swarm.subscription': '订阅',
+  'swarm.free': '免费',
   'swarm.metered': '按量计费',
   'swarm.noneEnabled': '没有启用任何工作者，因此无法运行。',
   'swarm.meteredWarning': '已启用按量计费的工作者：它承担的任务将按 token 计费。',

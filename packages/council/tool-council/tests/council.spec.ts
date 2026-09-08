@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createPalette, supportsColor } from '../src/colors.ts'
-import { choosePlanner, parseReview, tally } from '../src/council.ts'
+import { choosePlanner, parseReview, plannerOrder, tally } from '../src/council.ts'
 import { describeError } from '../src/errors.ts'
 import type { SeatReview } from '../src/council.ts'
 import { renderReport } from '../src/report.ts'
@@ -190,7 +190,7 @@ describe('executable candidates', () => {
 
 describe('seat resolution', () => {
   it('returns shipped defaults when nothing is overridden', () => {
-    expect(resolveSeats().map(seat => seat.id)).toEqual(['claude', 'free-claude', 'openai', 'kimi', 'deepseek'])
+    expect(resolveSeats().map(seat => seat.id)).toEqual(['claude', 'free-claude', 'openai', 'kimi', 'deepseek', 'openrouter-free'])
   })
 
   it('applies a model override without touching other seats', () => {
@@ -242,9 +242,9 @@ describe('report rendering', () => {
 })
 
 describe('extra seats', () => {
-  it('appends a configured OpenRouter seat after the shipped four', () => {
+  it('appends a configured OpenRouter seat after the shipped ones', () => {
     const seats = resolveSeats({}, { grok: { model: 'x-ai/grok-4', name: 'Grok' } })
-    expect(seats.map(seat => seat.id)).toEqual(['claude', 'free-claude', 'openai', 'kimi', 'deepseek', 'grok'])
+    expect(seats.map(seat => seat.id)).toEqual(['claude', 'free-claude', 'openai', 'kimi', 'deepseek', 'openrouter-free', 'grok'])
     const grok = seats.find(seat => seat.id === 'grok')
     expect(grok?.transport).toBe('openrouter')
     expect(grok?.model).toBe('x-ai/grok-4')
@@ -303,6 +303,27 @@ describe('planner selection', () => {
 
   it('returns nothing when the roster is empty', () => {
     expect(choosePlanner([], undefined)).toBeUndefined()
+  })
+
+  it('prefers the seat whose plan won the vote over the cheapest one', () => {
+    // Cost transparency is the right default only while nobody has been
+    // chosen. Once a council has settled, the seat that argued for the
+    // approach is the one that should split it up — handing the graph to a
+    // different seat means re-deriving the reasoning from prose.
+    expect(choosePlanner(DEFAULT_SEATS, undefined, 'claude')?.id).toBe('claude')
+  })
+
+  it('lets a configured planner outrank the winner', () => {
+    expect(choosePlanner(DEFAULT_SEATS, 'deepseek', 'claude')?.id).toBe('deepseek')
+  })
+
+  it('ignores a winning seat that is switched off', () => {
+    const seats = resolveSeats({ kimi: { enabled: false } })
+    expect(choosePlanner(seats, undefined, 'kimi')?.id).toBe('deepseek')
+  })
+
+  it('puts the winner first in the fallback order', () => {
+    expect(plannerOrder(DEFAULT_SEATS, undefined, 'claude')[0]?.id).toBe('claude')
   })
 })
 

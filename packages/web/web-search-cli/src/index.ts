@@ -13,39 +13,156 @@
  */
 
 import { spawn } from 'node:child_process'
-import { statSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { WebSearchProvider, WebSearchRequest, WebSearchResult, WebSearchSource } from '@deepseek-ai/dsh-web'
 import { RoutingSearchProvider } from './router.ts'
+import { readPolicy } from './traffic.ts'
 import type { Route } from './router.ts'
+import type { TrafficPolicy } from './traffic.ts'
 
 export { RoutingSearchProvider, byCost } from './router.ts'
 export type { CostClass, Route, RouteAttempt } from './router.ts'
+export { TrafficDirector, TRAFFIC_POLICIES, readPolicy } from './traffic.ts'
+export type { Lane, LaneBlock, LaneStats, TrafficPolicy } from './traffic.ts'
+
+/** One CLI lane's routing. */
+export interface LaneOptions {
+  /** Stable lane name, shown in diagnostics. */
+  name?: string
+  /** Executable to run; resolved against PATH, never through a shell. */
+  command?: string
+  /** Argv template. `{prompt}` is replaced with the search instruction. */
+  args?: string[]
+  /** Hard cap on one search on this lane, in milliseconds. */
+  timeoutMs?: number
+  /**
+   * Flag that takes a path the CLI should write its final message to.
+   *
+   * Some CLIs print a banner, an echo of the prompt, and a running trace
+   * before the answer. `codex exec` is one: its echoed prompt contains the
+   * JSON schema we asked for, so scraping the first `{` to the last `}` out of
+   * stdout spans the echo and the answer together and parses as nothing. Given
+   * this flag the lane reads the answer from a file instead, and stdout is
+   * only a fallback.
+   */
+  lastMessageFlag?: string
+  /**
+   * Searches this lane carries comfortably at once. A weight, not a limit —
+   * see the traffic director.
+   */
+  capacity?: number
+  /** Whether this lane participates. */
+  enabled?: boolean
+}
 
 /** Provider configuration. */
 export interface Config {
   /** Provider id, unique among registered search providers. */
   id?: string
   /**
-   * Also route to OpenRouter when the CLI is unavailable. Off by default so
-   * this package stays a single-purpose provider unless routing is asked for.
+   * Also route to OpenRouter when no CLI lane answers. Off by default so this
+   * package stays a single-purpose provider unless routing is asked for.
    */
   routeToOpenRouter?: boolean
   /** Environment variable holding the OpenRouter key, when routing to it. */
   openRouterKeyEnv?: string
   /** Model OpenRouter uses for its web plugin. */
   openRouterModel?: string
-  /** Executable to run; resolved against PATH, never through a shell. */
+  /** Executable to run on the first lane; resolved against PATH. */
   command?: string
-  /** Argv template. `{prompt}` is replaced with the search instruction. */
+  /** Argv template for the first lane. `{prompt}` is replaced. */
   args?: string[]
   /** Hard cap on one search, in milliseconds. */
   timeoutMs?: number
   /** Results requested when the caller sets no bound. */
   maxResults?: number
+  /**
+   * How work is spread across lanes of the same cost class.
+   *
+   * `balanced` sends each search to the least-loaded lane, which is what makes
+   * concurrent lookups finish in parallel instead of queueing behind one
+   * binary. `cheapest` keeps the older strict-order behaviour. `fastest`
+   * orders by measured latency once lanes have a record.
+   */
+  trafficPolicy?: TrafficPolicy
+  /**
+   * CLI lanes, overriding the built-in Claude and Codex pair.
+   *
+   * A dict rather than an array: a nested array default materialises awkwardly
+   * in the settings UI, and keying by lane name is what the diagnostics use
+   * anyway.
+   */
+  lanes?: Record<string, LaneOptions>
+}
+
+/**
+ * Working directory handed to every CLI lane.
+ *
+ * An agent CLI discovers project instruction files by walking up from its
+ * working directory. Inheriting the host's cwd feeds the lane whatever
+ * repository DSH happens to be running in, which costs seconds per call and
+ * can steer the answer toward that project's instructions instead of the
+ * search. A search lane needs no project context at all.
+ */
+const LANE_CWD = join(homedir(), '.dsh', 'search-cwd')
+
+/** One lane with every value settled, ready to be turned into a route. */
+export interface ResolvedLane {
+  readonly name: string
+  readonly command: string
+  readonly args: readonly string[]
+  readonly capacity: number
+  readonly enabled: boolean
+  readonly timeoutMs?: number | undefined
+  readonly lastMessageFlag?: string | undefined
+}
+
+/**
+ * The lanes a fresh install routes across.
+ *
+ * Two subscriptions the user already pays for, each reached through its own
+ * authenticated CLI. Both are `included`, so the director spreads across them
+ * rather than draining one — which is the whole point: a council round asking
+ * for eight lookups runs them two at a time instead of eight in a row.
+ */
+export const DEFAULT_LANES: readonly ResolvedLane[] = [
+  {
+    name: 'claude-cli',
+    command: 'claude',
+    // Print mode grants no tool permissions by default; without this the CLI
+    // returns an empty result set rather than searching.
+    args: ['--allowedTools', 'WebSearch,WebFetch', '-p', '{prompt}'],
+    capacity: 1,
+    enabled: true,
+  },
+  {
+    name: 'codex-cli',
+    command: 'codex',
+    // `tools.web_search` is off by default in `codex exec`; without it the
+    // model answers from training data and cites nothing. `--ephemeral` keeps
+    // a search from leaving a session file behind, and
+    // `--skip-git-repo-check` is required because the lane's neutral working
+    // directory is deliberately not a repository.
+    args: [
+      'exec',
+      '-c', 'tools.web_search=true',
+      '--skip-git-repo-check',
+      '--ephemeral',
+      '--color', 'never',
+      '{prompt}',
+    ],
+    capacity: 1,
+    enabled: true,
+  },
+]
+
+/** The flag each known CLI uses to write its final message to a file. */
+const LAST_MESSAGE_FLAGS: Readonly<Record<string, string>> = {
+  codex: '--output-last-message',
 }
 
 /** Loader schema. */
@@ -55,11 +172,19 @@ export const Config: z<Config> = z.object({
   openRouterKeyEnv: z.string().default('OPENROUTER_API_KEY'),
   openRouterModel: z.string().default('deepseek/deepseek-v4-flash'),
   command: z.string().default('claude'),
-  // Print mode grants no tool permissions by default; without this the CLI
-  // returns an empty result set rather than searching.
   args: z.array(z.string()).default(['--allowedTools', 'WebSearch,WebFetch', '-p', '{prompt}']),
   timeoutMs: z.natural().default(120_000),
   maxResults: z.natural().default(5),
+  trafficPolicy: z.union([z.const('balanced'), z.const('cheapest'), z.const('fastest')]).default('balanced'),
+  lanes: z.dict(z.object({
+    name: z.string(),
+    command: z.string(),
+    args: z.array(z.string()),
+    timeoutMs: z.natural(),
+    lastMessageFlag: z.string(),
+    capacity: z.natural(),
+    enabled: z.boolean(),
+  })),
 })
 
 /** Cordis plugin name. */
@@ -88,7 +213,14 @@ const WINDOWS_EXTENSIONS = ['.exe', '.com', '.cmd', '.bat', ''] as const
  */
 const NPM_BIN_PATHS: Readonly<Record<string, readonly string[]>> = {
   claude: ['@anthropic-ai/claude-code/bin/claude.exe'],
-  codex: ['@openai/codex/bin/codex.exe'],
+  // Codex moved its native binary into a per-platform sub-package; `bin/` now
+  // holds only a JS wrapper. The old path stays last so an older install still
+  // resolves.
+  codex: [
+    '@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe',
+    '@openai/codex/node_modules/@openai/codex-win32-arm64/vendor/aarch64-pc-windows-msvc/bin/codex.exe',
+    '@openai/codex/bin/codex.exe',
+  ],
 }
 
 /** Directories npm uses for global packages on this platform. */
@@ -165,17 +297,48 @@ interface RunResult {
   readonly spawnError?: string | undefined
 }
 
+/**
+ * Make sure a lane's working directory exists.
+ * @param dir - the configured directory.
+ * @returns the same directory, or the host's cwd when it cannot be created.
+ */
+function ensureDir(dir: string): string {
+  try {
+    mkdirSync(dir, { recursive: true })
+    return dir
+  } catch {
+    return process.cwd()
+  }
+}
+
 /** Run one command without a shell, capturing its output. */
 function runOnce(
   command: string,
   args: readonly string[],
   signal: AbortSignal | undefined,
   timeoutMs: number,
+  env?: Readonly<Record<string, string>>,
+  cwd?: string,
 ): Promise<RunResult> {
   return new Promise<RunResult>((resolve) => {
     let child
     try {
-      child = spawn(command, [...args], { shell: false, windowsHide: true })
+      child = spawn(command, [...args], {
+        shell: false,
+        windowsHide: true,
+        // The child gets NO stdin. Node's default is an open pipe nobody ever
+        // writes to, and an agent CLI that accepts a piped prompt reads it:
+        // `codex exec` prints "Reading additional input from stdin..." and
+        // blocks until the timeout, so the lane looked merely slow rather than
+        // misconfigured. Closing stdin is the EOF it is waiting for.
+        stdio: ['ignore', 'pipe', 'pipe'],
+        // Created on demand: spawn throws ENOENT for a missing cwd, and a lane
+        // must not depend on a directory someone remembered to make.
+        ...cwd === undefined ? {} : { cwd: ensureDir(cwd) },
+        // Layered over the parent environment rather than replacing it: the
+        // child still needs PATH and the rest of it to start at all.
+        ...env === undefined ? {} : { env: { ...process.env, ...env } },
+      })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       resolve({ stdout: '', stderr: '', code: null, spawnError: message })
@@ -200,8 +363,8 @@ function runOnce(
       finish({ stdout, stderr, code: null, spawnError: 'aborted' })
     }
     signal?.addEventListener('abort', onAbort, { once: true })
-    child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8') })
-    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8') })
+    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8') })
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8') })
     child.on('error', (error: Error) => { finish({ stdout, stderr, code: null, spawnError: error.message }) })
     child.on('close', (code) => { finish({ stdout, stderr, code }) })
   })
@@ -269,6 +432,34 @@ export function parseSearchReply(text: string, maxResults: number): WebSearchRes
   }
 }
 
+/** Extras a lane may declare beyond the command line itself. */
+export interface CliSearchOptions {
+  /** Flag taking a path the CLI writes its final message to. */
+  readonly lastMessageFlag?: string | undefined
+  /** Working directory for the child, so it discovers no project context. */
+  readonly cwd?: string | undefined
+  /** Environment layered over the parent process environment. */
+  readonly env?: Readonly<Record<string, string>> | undefined
+}
+
+/**
+ * Read a CLI's final message from the file it was told to write.
+ *
+ * Returns undefined when the file is missing or empty, so the caller falls
+ * back to stdout rather than treating a silent CLI as an empty answer.
+ * @param path - the file the CLI was given, when it was given one.
+ * @returns the message, or undefined.
+ */
+function readLastMessage(path: string | undefined): string | undefined {
+  if (path === undefined) return undefined
+  try {
+    const text = readFileSync(path, 'utf8').trim()
+    return text === '' ? undefined : text
+  } catch {
+    return undefined
+  }
+}
+
 /** Search performed by an already-authenticated agent CLI. */
 export class CliSearchProvider implements WebSearchProvider {
   readonly id: string
@@ -276,13 +467,22 @@ export class CliSearchProvider implements WebSearchProvider {
   private readonly args: readonly string[]
   private readonly timeoutMs: number
   private readonly maxResults: number
+  private readonly options: CliSearchOptions
 
-  constructor(id: string, command: string, args: readonly string[], timeoutMs: number, maxResults: number) {
+  constructor(
+    id: string,
+    command: string,
+    args: readonly string[],
+    timeoutMs: number,
+    maxResults: number,
+    options: CliSearchOptions = {},
+  ) {
     this.id = id
     this.command = command
     this.args = args
     this.timeoutMs = timeoutMs
     this.maxResults = maxResults
+    this.options = options
   }
 
   /**
@@ -307,24 +507,35 @@ export class CliSearchProvider implements WebSearchProvider {
   async search(request: WebSearchRequest, signal?: AbortSignal): Promise<WebSearchResult> {
     const max = request.maxResults ?? this.maxResults
     const prompt = searchPrompt(request.query, max)
-    const argv = this.args.map(entry => (entry === '{prompt}' ? prompt : entry))
+    const base = this.args.map(entry => (entry === '{prompt}' ? prompt : entry))
 
-    const lastError = `${this.command}: not installed or not on PATH`
-    for (const candidate of executableCandidates(this.command)) {
-      const result = await runOnce(candidate, argv, signal, this.timeoutMs)
-      // EINVAL is Node refusing to spawn a batch shim without a shell; treat it
-      // as "wrong spelling" so the next candidate gets a turn.
-      if (result.spawnError !== undefined && /ENOENT|EINVAL|not recognized|cannot find/i.test(result.spawnError)) {
-        continue
+    // A CLI that can write its final message to a file gets a private one, so
+    // its banner and its echo of the prompt never reach the parser.
+    const flag = this.options.lastMessageFlag
+    const scratch = flag === undefined ? undefined : mkdtempSync(join(tmpdir(), 'dsh-search-'))
+    const replyFile = scratch === undefined ? undefined : join(scratch, 'reply.txt')
+    const argv = flag === undefined || replyFile === undefined ? base : [...base, flag, replyFile]
+
+    try {
+      const lastError = `${this.command}: not installed or not on PATH`
+      for (const candidate of executableCandidates(this.command)) {
+        const result = await runOnce(candidate, argv, signal, this.timeoutMs, this.options.env, this.options.cwd)
+        // EINVAL is Node refusing to spawn a batch shim without a shell; treat
+        // it as "wrong spelling" so the next candidate gets a turn.
+        if (result.spawnError !== undefined && /ENOENT|EINVAL|not recognized|cannot find/i.test(result.spawnError)) {
+          continue
+        }
+        if (result.spawnError !== undefined) throw new Error(`web-search-cli: ${result.spawnError}`)
+        if (result.code !== 0) {
+          const detail = result.stderr.trim() || result.stdout.trim() || `exit ${String(result.code)}`
+          throw new Error(`web-search-cli: ${detail.slice(0, 300)}`)
+        }
+        return parseSearchReply(readLastMessage(replyFile) ?? result.stdout, max)
       }
-      if (result.spawnError !== undefined) throw new Error(`web-search-cli: ${result.spawnError}`)
-      if (result.code !== 0) {
-        const detail = result.stderr.trim() || result.stdout.trim() || `exit ${String(result.code)}`
-        throw new Error(`web-search-cli: ${detail.slice(0, 300)}`)
-      }
-      return parseSearchReply(result.stdout, max)
+      throw new Error(`web-search-cli: ${lastError}`)
+    } finally {
+      if (scratch !== undefined) rmSync(scratch, { recursive: true, force: true })
     }
-    throw new Error(`web-search-cli: ${lastError}`)
   }
 }
 
@@ -373,7 +584,7 @@ class OpenRouterRoute implements WebSearchProvider {
     const message = body.choices?.[0]?.message
     const content = typeof message?.content === 'string' ? message.content : undefined
     const sources: WebSearchSource[] = []
-    const annotations = (message as { annotations?: unknown } | undefined)?.annotations
+    const annotations = message?.annotations
     if (Array.isArray(annotations)) {
       for (const entry of annotations) {
         const citation = (entry as { url_citation?: { url?: unknown; title?: unknown; content?: unknown } }).url_citation
@@ -413,43 +624,97 @@ async function openRouterBalance(key: () => string | undefined): Promise<number 
 }
 
 /**
+ * Resolve the configured CLI lanes.
+ *
+ * With nothing configured this is the built-in Claude and Codex pair, with the
+ * first lane's command and argv still honouring the older top-level `command`
+ * and `args` settings. A `lanes` dict replaces the pair outright.
+ * @param config - the plugin configuration.
+ * @returns the lanes to route across, in declaration order.
+ */
+export function resolveLanes(config: Config): readonly Route[] {
+  const configured: readonly ResolvedLane[] = config.lanes === undefined || Object.keys(config.lanes).length === 0
+    ? DEFAULT_LANES.map((lane, index) => (
+      // The first lane keeps answering to the older flat settings, so an
+      // existing install that pinned a command does not silently change CLI.
+      index !== 0
+        ? lane
+        : {
+          ...lane,
+          ...config.command === undefined ? {} : { command: config.command },
+          ...config.args === undefined ? {} : { args: config.args },
+        }
+    ))
+    : Object.entries(config.lanes).map(([key, lane]) => ({
+      name: lane.name ?? key,
+      command: lane.command ?? key,
+      args: lane.args ?? ['{prompt}'],
+      capacity: lane.capacity ?? 1,
+      enabled: lane.enabled !== false,
+      ...lane.timeoutMs === undefined ? {} : { timeoutMs: lane.timeoutMs },
+      ...lane.lastMessageFlag === undefined ? {} : { lastMessageFlag: lane.lastMessageFlag },
+    }))
+
+  const routes: Route[] = []
+  for (const lane of configured) {
+    if (!lane.enabled) continue
+    const bare = lane.command.replace(/\.(cmd|exe|bat|ps1)$/i, '')
+    const lastMessageFlag = lane.lastMessageFlag ?? LAST_MESSAGE_FLAGS[bare]
+    routes.push({
+      name: lane.name,
+      cost: 'included',
+      capacity: lane.capacity,
+      provider: new CliSearchProvider(
+        lane.name,
+        lane.command,
+        lane.args,
+        lane.timeoutMs ?? config.timeoutMs ?? 120_000,
+        config.maxResults ?? 5,
+        {
+          cwd: LANE_CWD,
+          ...lastMessageFlag === undefined ? {} : { lastMessageFlag },
+        },
+      ),
+    })
+  }
+  return routes
+}
+
+/**
  * Register the search provider.
  *
- * With routing off this registers the CLI provider alone. With routing on it
- * registers ONE routing provider that owns both routes — the seam refuses to
- * choose between two usable providers, so fallback cannot be expressed as two
- * registrations.
+ * Always ONE registration: the seam refuses to choose between two usable
+ * providers, so neither fallback nor load spreading can be expressed as
+ * several registrations. The routing provider owns every lane and the traffic
+ * director decides between them.
  * @param ctx - host context carrying the web capability registry.
- * @param config - command, argv template, limits, and routing.
+ * @param config - lanes, traffic policy, limits, and metered routing.
  */
 export function apply(ctx: Context, config: Config = {}): void {
-  const cli = new CliSearchProvider(
-    'claude-cli',
-    config.command ?? 'claude',
-    config.args ?? ['--allowedTools', 'WebSearch,WebFetch', '-p', '{prompt}'],
-    config.timeoutMs ?? 120_000,
-    config.maxResults ?? 5,
-  )
+  const lanes = [...resolveLanes(config)]
 
-  if (config.routeToOpenRouter !== true) {
-    ctx.web.registerSearchProvider(cli)
-    return
-  }
-
-  const variable = config.openRouterKeyEnv ?? 'OPENROUTER_API_KEY'
-  const key = (): string | undefined => {
-    const fromEnv = process.env[variable]
-    return typeof fromEnv === 'string' && fromEnv !== '' ? fromEnv : undefined
-  }
-  const routes: Route[] = [
-    // A subscription search costs nothing beyond the plan, so it goes first.
-    { name: 'claude-cli', cost: 'included', provider: cli },
-    {
+  if (config.routeToOpenRouter === true) {
+    const variable = config.openRouterKeyEnv ?? 'OPENROUTER_API_KEY'
+    const key = (): string | undefined => {
+      const fromEnv = process.env[variable]
+      return typeof fromEnv === 'string' && fromEnv !== '' ? fromEnv : undefined
+    }
+    lanes.push({
       name: 'openrouter',
       cost: 'metered',
       provider: new OpenRouterRoute(key, config.openRouterModel ?? 'deepseek/deepseek-v4-flash'),
       balanceUsd: () => openRouterBalance(key),
-    },
-  ]
-  ctx.web.registerSearchProvider(new RoutingSearchProvider(config.id ?? 'router', routes))
+    })
+  }
+
+  // A single CLI lane and no metered route is the degenerate case: routing it
+  // would only add a layer, so register the provider itself.
+  const only = lanes[0]
+  if (lanes.length === 1 && only !== undefined) {
+    ctx.web.registerSearchProvider(only.provider)
+    return
+  }
+  ctx.web.registerSearchProvider(
+    new RoutingSearchProvider(config.id ?? 'router', lanes, readPolicy(config.trafficPolicy)),
+  )
 }

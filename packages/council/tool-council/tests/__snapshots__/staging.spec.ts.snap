@@ -1,0 +1,3 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`API work staging > boots the real Loader, gates the tool, stages without CLI calls, and refuses outside writes 1`] = `"[{"type":"text","text":"Staged 1 file(s) for later review. No CLI seat was started and no destination repository was updated.\\n\\n- <ROOT>/workspace/.dsh-staging/<BATCH>/src/app.py"}]"`;

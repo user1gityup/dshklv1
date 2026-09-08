@@ -147,4 +147,55 @@ describe('seat-directed research', () => {
     const seam: SearchSeam = { async search() { return { sources: [] } } }
     expect(await gatherRequested(seam, [])).toBeUndefined()
   })
+
+  it('runs several searches at once so the round is not their sum', async () => {
+    // Sequentially this round is eight CLI searches back to back, and the
+    // council waits minutes before a draft starts.
+    let inFlight = 0
+    let peak = 0
+    const seam: SearchSeam = {
+      async search(request) {
+        inFlight += 1
+        peak = Math.max(peak, inFlight)
+        await new Promise<void>((resolve) => { setTimeout(resolve, 5) })
+        inFlight -= 1
+        return { sources: [{ url: `https://${request.query}.example` }] }
+      },
+    }
+    const evidence = await gatherRequested(seam, [{ seat: 'kimi', queries: ['a', 'b', 'c'] }], undefined, 3)
+    expect(peak).toBe(3)
+    expect(evidence?.urls).toHaveLength(3)
+  })
+
+  it('honours the concurrency it is given', async () => {
+    let inFlight = 0
+    let peak = 0
+    const seam: SearchSeam = {
+      async search() {
+        inFlight += 1
+        peak = Math.max(peak, inFlight)
+        await new Promise<void>((resolve) => { setTimeout(resolve, 5) })
+        inFlight -= 1
+        return { sources: [{ url: 'https://a.example' }] }
+      },
+    }
+    await gatherRequested(seam, [{ seat: 'kimi', queries: ['a', 'b', 'c'] }], undefined, 1)
+    expect(peak).toBe(1)
+  })
+
+  it('numbers citations by the order asked, not the order answered', async () => {
+    // Seats quote these numbers, so they must not depend on which lane
+    // happened to finish first.
+    const seam: SearchSeam = {
+      async search(request) {
+        const slow = request.query === 'first'
+        await new Promise<void>((resolve) => { setTimeout(resolve, slow ? 20 : 1) })
+        return { sources: [{ url: `https://${request.query}.example`, title: request.query }] }
+      },
+    }
+    const evidence = await gatherRequested(seam, [{ seat: 'kimi', queries: ['first', 'second'] }], undefined, 2)
+    expect(evidence?.urls).toEqual(['https://first.example', 'https://second.example'])
+    expect(evidence?.block).toContain('[1] first — https://first.example')
+    expect(evidence?.block).toContain('[2] second — https://second.example')
+  })
 })

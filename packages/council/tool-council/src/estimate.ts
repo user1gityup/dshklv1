@@ -170,7 +170,10 @@ export function estimateRun(
   let priced = 0
 
   for (const seat of active) {
-    if (seat.transport !== 'openrouter') {
+    // A free seat is priced at zero, not unpriced: reporting it as metered
+    // would make the panel warn that a seat could not be priced when its cost
+    // is known exactly.
+    if (seat.transport !== 'openrouter' || seat.free === true) {
       perSeat.push({ seat: seat.id, name: seat.name, metered: false })
       continue
     }

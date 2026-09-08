@@ -27,13 +27,15 @@
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import type { JSX } from 'react'
+import { gateState, pickCandidates } from './GateStrip.tsx'
 import type { SettingsFace } from './CouncilBudget.tsx'
 import { NS } from './locales.ts'
 import css from './PipelineControl.module.css'
 
 /** Props for the pipeline control. */
 export type PipelineControlProps =
-  PropsRuntime<'conversation.input.dock'>
+  PropsRuntime<'conversation.column.top'>
   & PropsLocale<typeof NS>
   & {
     settings: SettingsFace
@@ -41,23 +43,50 @@ export type PipelineControlProps =
     send: (text: string) => Promise<void>
   }
 
-/** Stage order, mirrored from the host so the control can count them. */
+/** The default stage order, mirrored from the host. */
 const STAGES = ['council', 'swarm', 'review'] as const
+
+/** Every stage the host knows, so an order it was given can be validated here. */
+const KNOWN_STAGES = ['council', 'propose', 'swarm', 'review'] as const
 
 /** What each stage is called on the control. */
 const STAGE_LABEL: Record<string, string> = {
   council: 'council — agree the approach',
+  propose: 'propose — each seat writes its own version',
   swarm: 'swarm — split and run the work',
   review: 'council — review what came back',
 }
 
 /**
+ * The stage list a run is on, read from settings.
+ *
+ * The count in "Stage 2 of 3" has to come from the run rather than from a
+ * constant here, or a four-stage build reads as a three-stage one that
+ * overran. Anything unreadable falls back to the default, which is what every
+ * run stored before the order was configurable is.
+ * @param text - the stored order, comma separated.
+ * @returns the stages, in order.
+ */
+export function readStages(text: string | undefined): readonly string[] {
+  if (text === undefined || text.trim() === '') return STAGES
+  const known = new Set<string>(KNOWN_STAGES)
+  const out = text.split(/[\s,]+/).map(one => one.trim().toLowerCase()).filter(one => known.has(one))
+  return out.length === 0 ? STAGES : [...new Set(out)]
+}
+
+/**
  * The prompt that starts a run, shown to the user before it is sent.
  * @param request - the work, in the user's own words.
+ * @param stages - the stage order this run needs, when it is not the default.
  * @returns the prompt text.
  */
-export function startPrompt(request: string): string {
-  return `Run the pipeline tool on this request, one stage at a time: ${request}`
+export function startPrompt(request: string, stages: string = '', mode = ''): string {
+  // The order rides in the prompt because that is the only channel the panel
+  // has to the tool. A saved build run that could not say "propose" here got
+  // the default three-stage chain no matter what its text described, which is
+  // exactly how a run that asked for code samples produced none.
+  const order = stages.trim() === '' ? '' : ` Pass stages as \`${stages.trim()}\`.`
+  return `Run the pipeline tool on this request, one stage at a time.${order}${mode === '' ? '' : ` Pass mode as \`${mode}\`.`} Request: ${request}`
 }
 
 /** The prompt that abandons the run in progress and starts a fresh one. */
@@ -118,7 +147,7 @@ function countdown(resumeAt: number, now: number): string {
 }
 
 /**
- * Pipeline control, docked above the composer.
+ * Pipeline control, pinned to the top of the conversation column.
  * @param props - locale seat, the council settings scope, and the send face.
  * @returns the control.
  */
@@ -135,6 +164,12 @@ export function PipelineControl({ t, settings, send }: PipelineControlProps): JS
   const [picked, setPicked] = useState('')
   const [now, setNow] = useState(() => Date.now())
   const [busy, setBusy] = useState(false)
+  // Why the last press did not land. `conversation.send` rejects when the
+  // session cannot take the prompt — a wedged turn, a closed scope — and the
+  // rejection used to be swallowed, so a failed press was indistinguishable
+  // from a press that did nothing: the pill cleared, the transcript stayed
+  // empty, and the panel said neither. The message is state so it can be shown.
+  const [failure, setFailure] = useState('')
   // A hold must reactivate ONCE. Without this the countdown reaching zero
   // would send the continue prompt on every tick.
   const fired = useRef<number>(0)
@@ -148,11 +183,19 @@ export function PipelineControl({ t, settings, send }: PipelineControlProps): JS
   const query = typeof section?.['pipelineQuery'] === 'string' ? section['pipelineQuery'] : ''
   const auto = section?.['pipelineAuto'] === true
 
+  // Whether the panel is folded to its one-line head. A setting rather than
+  // component state: the panel is pinned chrome, and one that re-opened itself
+  // on every session switch would undo the minimizing on the user's behalf.
+  const collapsed = section?.['pipelineCollapsed'] === true
+
   // Presets are written into settings — by hand, or by an assistant the user
   // worked the wording out with. The panel only reads them, so a preset is
   // reviewable in one place instead of being retyped into the composer.
   const presets = Object.entries(
-    (section?.['pipelinePresets'] ?? {}) as Record<string, { name?: string; query?: string; autoAdvance?: boolean }>,
+    (section?.['pipelinePresets'] ?? {}) as Record<
+      string,
+      { name?: string; query?: string; autoAdvance?: boolean; stages?: string; mode?: string }
+    >,
   )
     .filter(([, preset]) => typeof preset.query === 'string' && preset.query !== '')
     // Sorted by id, and ids are `area/name`, so the list groups itself by area
@@ -174,22 +217,62 @@ export function PipelineControl({ t, settings, send }: PipelineControlProps): JS
   // The one text the Run button will send. A picked run outranks the box, and
   // the two clear each other, so the panel never holds two pending requests.
   const outgoing = chosen === undefined ? request.trim() : (chosen.query ?? '')
+  // Only a saved run carries an order. A hand-typed request gets the default,
+  // the same way it gets no auto-advance.
+  const outgoingStages = chosen?.stages ?? ''
+  // The order the RUNNING chain is on, which is what the progress line counts.
+  const order = readStages(typeof section?.['pipelineStages'] === 'string' ? section['pipelineStages'] : '')
 
-  const go = (text: string): void => {
+  // What the strip above is asking for, read here so the FOLDED panel can say
+  // that something is. Folded, the strip is still on screen — but the panel is
+  // the thing the user folded, and a chain that has stopped to ask a question
+  // is indistinguishable from a chain that has stalled unless the one line
+  // left visible says which. `waiting` is the word, not a count: the strip
+  // itself carries the detail, and repeating it here would just be a second
+  // place to keep correct.
+  const pending = pickCandidates(section).length > 0
+    ? 'pick a version'
+    : gateState(section, now)?.state === 'waiting'
+      ? 'waiting for approval'
+      : ''
+
+  /**
+   * Send one prompt and say whether it actually landed.
+   * @param text - the prompt to send.
+   * @returns true when the session accepted it.
+   */
+  const go = async (text: string): Promise<boolean> => {
     setBusy(true)
-    void send(text).finally(() => { setBusy(false) })
+    setFailure('')
+    try {
+      await send(text)
+      return true
+    } catch (error) {
+      setFailure(error instanceof Error ? error.message : String(error))
+      return false
+    } finally {
+      setBusy(false)
+    }
   }
 
   // Start whatever the panel is aimed at. Only a saved run carries an
   // auto-advance setting, so firing one writes that flag and a typed request
   // clears it — otherwise the last preset's setting would leak into the next
   // hand-typed run.
+  //
+  // Nothing is consumed until the send lands. A press that fails leaves the
+  // pill picked and the flag unwritten, so pressing again after the session is
+  // unwedged repeats exactly the run that was aimed at — the panel never eats
+  // a choice it did not act on.
   const start = (): void => {
     if (outgoing === '') return
-    void settings.set('pipelineAuto', chosen?.autoAdvance === true)
-    advanced.current = ''
-    setPicked('')
-    go(startPrompt(outgoing))
+    const wanted = chosen?.autoAdvance === true
+    void go(startPrompt(outgoing, outgoingStages, chosen?.mode ?? '')).then((sent) => {
+      if (!sent) return
+      void settings.set('pipelineAuto', wanted)
+      advanced.current = ''
+      setPicked('')
+    })
   }
 
   // The reactivation itself: the window has rolled over, so continue without
@@ -197,7 +280,9 @@ export function PipelineControl({ t, settings, send }: PipelineControlProps): JS
   useEffect(() => {
     if (!held || now < resumeAt || fired.current === resumeAt) return
     fired.current = resumeAt
-    go(CONTINUE_PROMPT)
+    // A send that never landed must not count as the one restart this hold is
+    // allowed, or the run stays parked with nothing left to wake it.
+    void go(CONTINUE_PROMPT).then((sent) => { if (!sent) fired.current = 0 })
   }, [held, now, resumeAt])
 
   // Auto-advance: a preset that says so carries the chain from stage to stage
@@ -209,7 +294,9 @@ export function PipelineControl({ t, settings, send }: PipelineControlProps): JS
     if (advanced.current === stage) return undefined
     const timer = setTimeout(() => {
       advanced.current = stage
-      go(CONTINUE_PROMPT)
+      // Same rule as the hold: a failed send does not spend this stage's one
+      // automatic advance.
+      void go(CONTINUE_PROMPT).then((sent) => { if (!sent) advanced.current = '' })
     }, 1_500)
     return () => { clearTimeout(timer) }
   }, [auto, running, held, busy, stage])
@@ -225,14 +312,66 @@ export function PipelineControl({ t, settings, send }: PipelineControlProps): JS
     if (picked !== '' && chosen === undefined) setPicked('')
   }, [picked, chosen])
 
-  const index = STAGES.indexOf(stage as (typeof STAGES)[number])
+  const index = order.indexOf(stage)
   const position = index < 0 ? 1 : index + 1
+  const total = order.length
+  const fold = (next: boolean): void => { void settings.set('pipelineCollapsed', next) }
+
+  // What the folded head says, given one line to say it in. The run's state is
+  // the whole readout while it is folded, so a held run keeps its countdown
+  // here: the chain comes back by itself, and a countdown nobody can see is
+  // indistinguishable from a stall.
+  const line = held
+    ? `${t('pipeline.held')} ${countdown(resumeAt, now)}`
+    : running
+      ? `${String(position)}/${String(total)} - ${STAGE_LABEL[stage] ?? stage}`
+      : t('pipeline.idle')
+
+  // The folded face: the head row, alone. It keeps the title and the state
+  // line, because a control that folds to something unlabelled cannot be found
+  // again by anyone who did not fold it.
+  if (collapsed) {
+    return (
+      <div className={css.panel} role="group" aria-label={t('pipeline.title')}>
+        <div className={css.foldRow}>
+          <strong className={css.title}>{t('pipeline.title')}</strong>
+          {pending === ''
+            ? null
+            : (
+              <span className={css.pending} role="status">
+                <span className={css.pendingDot} aria-hidden="true" />
+                {pending}
+              </span>
+            )}
+          <span className={css.query}>{line}</span>
+          <button
+            type="button"
+            className={css.fold}
+            aria-label={t('pipeline.expand')}
+            onClick={() => { fold(false) }}
+          >
+            &#9662;
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className={css.panel} role="group" aria-label={t('pipeline.title')}>
-      <div className={css.head}>
-        <strong className={css.title}>{t('pipeline.title')}</strong>
-        <span className={css.sub}>{t('pipeline.hint')}</span>
+      <div className={css.foldRow}>
+        <div className={css.head}>
+          <strong className={css.title}>{t('pipeline.title')}</strong>
+          <span className={css.sub}>{t('pipeline.hint')}</span>
+        </div>
+        <button
+          type="button"
+          className={css.fold}
+          aria-label={t('pipeline.minimize')}
+          onClick={() => { fold(true) }}
+        >
+          &#9652;
+        </button>
       </div>
 
       {held
@@ -250,7 +389,7 @@ export function PipelineControl({ t, settings, send }: PipelineControlProps): JS
               type="button"
               className={css.action}
               disabled={busy}
-              onClick={() => { go(CONTINUE_PROMPT) }}
+              onClick={() => { void go(CONTINUE_PROMPT) }}
             >
               {t('pipeline.resumeNow')}
             </button>
@@ -262,13 +401,13 @@ export function PipelineControl({ t, settings, send }: PipelineControlProps): JS
         ? (
           <div className={css.row}>
             <span className={css.stage}>
-              {`Stage ${String(position)} of 3 · ${STAGE_LABEL[stage] ?? stage}`}
+              {`Stage ${String(position)} of ${String(total)} · ${STAGE_LABEL[stage] ?? stage}`}
             </span>
             <button
               type="button"
               className={css.action}
               disabled={busy}
-              onClick={() => { go(CONTINUE_PROMPT) }}
+              onClick={() => { void go(CONTINUE_PROMPT) }}
             >
               {t('pipeline.continue')}
             </button>
@@ -276,7 +415,7 @@ export function PipelineControl({ t, settings, send }: PipelineControlProps): JS
               type="button"
               className={css.action}
               disabled={busy}
-              onClick={() => { go(RESTART_PROMPT) }}
+              onClick={() => { void go(RESTART_PROMPT) }}
             >
               {t('pipeline.restart')}
             </button>
@@ -347,11 +486,25 @@ export function PipelineControl({ t, settings, send }: PipelineControlProps): JS
 
       {/* The prompt is shown, not hidden: a button that speaks for the user
           should say what it is about to say. It scrolls rather than grows, so
-          a long saved run cannot push the composer off the window; the tab
-          stop is what makes that scroll reachable without a mouse. */}
+          a long saved run cannot shrink the transcript under a pinned band
+          that never scrolls away; the tab stop is what makes that scroll
+          reachable without a mouse. */}
       {!running && outgoing !== ''
-        ? <p className={css.preview} tabIndex={0}>{startPrompt(outgoing)}</p>
+        ? <p className={css.preview} tabIndex={0}>{startPrompt(outgoing, outgoingStages, chosen?.mode ?? '')}</p>
         : null}
+
+      {/* A press that did not reach the session says so here, with the reason
+          the session gave. Without it the only evidence of a failed send is an
+          absence — nothing in the transcript — which reads as a dead button. */}
+      {failure === ''
+        ? null
+        : (
+          <p className={css.failure} role="alert">
+            {t('pipeline.failed')}
+            {' '}
+            {failure}
+          </p>
+        )}
     </div>
   )
 }

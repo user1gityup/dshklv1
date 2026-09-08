@@ -215,5 +215,33 @@ export function renderMarkdown(result: CouncilResult): string {
   }
   out.push(result.answer === '' ? '_No answer could be chosen: every seat failed or abstained._' : result.answer)
   if (result.spentUsd !== undefined) out.push('', `_Spent this run: $${result.spentUsd.toFixed(4)}_`)
+
+  const amended = result.amended
+  if (amended !== undefined) {
+    const names = (ids: readonly SeatId[]): string => ids.map(id => `${disc(id)} ${nameOf(result.seats, id)}`).join(', ')
+    out.push('', `**Amended** — attempt ${String(amended.attempt)} on run \`${amended.runId}\`, re-asking only the seats that had failed.`)
+    if (amended.recoveredDrafts.length > 0) out.push(`- Recovered answers: ${names(amended.recoveredDrafts)}`)
+    if (amended.recoveredReviews.length > 0) out.push(`- Recovered reviews: ${names(amended.recoveredReviews)}`)
+    if (amended.stillFailing.length > 0) out.push(`- Still failing: ${names(amended.stillFailing)}`)
+    // A vote cast on three answers is not a vote on five, and the tally does
+    // not know the difference — so the report has to say it.
+    if (amended.staleReviews.length > 0) {
+      out.push(`- **!** Votes by ${names(amended.staleReviews)} were cast before the recovered answers existed and were kept as they were, not re-asked.`)
+    }
+  }
+
+  // The holes a later call can fill without paying for the seats that
+  // answered. Named on the report itself, because by the time the user reads
+  // it the alternative on offer is running the whole council again.
+  const holes = [
+    ...result.drafts.filter(draft => draft.error !== undefined || draft.text === '').map(draft => draft.seat),
+    ...result.reviews.filter(review => review.error !== undefined).map(review => review.seat),
+  ]
+  if (result.runId !== undefined && holes.length > 0) {
+    out.push(
+      '',
+      `_${String(holes.length)} seat call${holes.length === 1 ? '' : 's'} failed. Amend this run — re-ask only those, keep everything already collected — by calling the council with \`resume: "${result.runId}"\` (or \`"last"\`)._`,
+    )
+  }
   return out.join('\n')
 }

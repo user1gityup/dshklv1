@@ -15,6 +15,7 @@ const PRICING = new Map<string, ModelPrice>([
 
 const PROVIDERS: readonly ProviderCost[] = [
   { name: 'claude-code', costClass: 'included' },
+  { name: 'free-claude', costClass: 'free' },
   { name: 'metered-one', costClass: 'metered', model: 'cheap/model' },
   { name: 'no-price', costClass: 'metered' },
 ]
@@ -24,6 +25,22 @@ describe('estimateExecution', () => {
     const out = estimateExecution([task('a', 'claude-code')], PROVIDERS, PRICING, 'metered-one')
     expect(out.meteredUsd).toBe(0)
     expect(out.includedCount).toBe(1)
+    expect(out.freeCount).toBe(0)
+  })
+
+  it('counts a free worker apart from a subscription one', () => {
+    // Both are $0.0000, so without a separate count the gate cannot tell a run
+    // that spends nothing from one that spends the month's quota.
+    const out = estimateExecution([task('a', 'free-claude')], PROVIDERS, PRICING, 'metered-one')
+    expect(out.meteredUsd).toBe(0)
+    expect(out.freeCount).toBe(1)
+    expect(out.includedCount).toBe(0)
+  })
+
+  it('says out loud that a free unit spends no quota either', () => {
+    const out = estimateExecution([task('a', 'free-claude')], PROVIDERS, PRICING, 'metered-one')
+    expect(out.caveats.some(caveat => caveat.includes('no subscription quota'))).toBe(true)
+    expect(renderExecutionEstimate(out).some(line => line.includes('free seat'))).toBe(true)
   })
 
   it('prices a metered worker from the price table', () => {

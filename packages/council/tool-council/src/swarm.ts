@@ -23,9 +23,9 @@
  */
 
 import type { SubTask } from './decompose.ts'
-import { directDecomposePrompt, executionWaves, parseDecomposition } from './decompose.ts'
-import type { Assignment, Worker } from './roster.ts'
-import { assignWorkers, seatRoster } from './roster.ts'
+import { directDecomposePrompt, executionWaves, parseDecomposition, validateGraph } from './decompose.ts'
+import type { Assignment, EarnedPreference, WorkKind, Worker } from './roster.ts'
+import { assignWorkers, seatRoster, inferKind } from './roster.ts'
 import type { ExecutionEstimate, ProviderCost } from './execution-cost.ts'
 import { estimateExecution, renderExecutionEstimate } from './execution-cost.ts'
 import type { ModelPrice } from './estimate.ts'
@@ -34,6 +34,8 @@ import { askSeat } from './seats.ts'
 import { choosePlanner } from './council.ts'
 import type { FileSeam } from './files.ts'
 import { gatherFiles, parseReadRequests, readRequestSection } from './files.ts'
+import { runUnitContest } from './swarm-contest.ts'
+import type { Candidate, WriteSeam } from './writes.ts'
 
 /** Newline, spelled out because the report is assembled from arrays. */
 const NL = String.fromCharCode(10)
@@ -46,6 +48,10 @@ export interface SwarmOverride {
 
 /** Everything one swarm run needs. */
 export interface SwarmRunOptions {
+  readonly profile?: 'economy' | 'fastest' | undefined
+  readonly picked?: string | undefined
+  readonly workRoot?: string | undefined
+  readonly writes?: WriteSeam | undefined
   /** What the user asked for, verbatim. */
   readonly query: string
   /** Every configured seat, shipped and user-added. */
@@ -65,6 +71,17 @@ export interface SwarmRunOptions {
   readonly timeoutMs: number
   /** Seat id that should write the decomposition. */
   readonly planner?: string | undefined
+  /**
+   * Seat whose plan won the council vote, when this run follows one.
+   *
+   * Routing that a user configures is an opinion; routing derived from this is
+   * earned by the run itself, which is why the winner is carried here rather
+   * than inferred from the roster. It selects the planner when no planner is
+   * configured outright, so the seat that argued for the approach is the one
+   * that splits it up. In the `fastest` profile it also earns first refusal on
+   * `code` units during assignment, ahead of load balancing.
+   */
+  readonly winner?: string | undefined
   /**
    * The graph to run, when one was already approved.
    *
@@ -91,6 +108,8 @@ export interface SwarmRunOptions {
 
 /** What one worker did with one unit. */
 export interface SwarmUnitResult {
+  readonly candidates?: readonly Candidate[] | undefined
+  readonly review?: string | undefined
   readonly task: SubTask
   /** Seat id that ran it. */
   readonly seat: string
@@ -182,7 +201,9 @@ THE OVERALL REQUEST (context — not your unit):
 ${query}
 
 YOUR UNIT: ${task.title}
-${task.detail}${context}${served}${offer}`
+${task.detail}
+${task.acceptance === undefined ? '' : `ACCEPTANCE:\n${task.acceptance.join('\n')}`}
+${task.files === undefined ? '' : `TARGET FILES:\n${task.files.join('\n')}`}${context}${served}${offer}`
 }
 
 /** One seat's cost shape, for the estimate. */
@@ -269,6 +290,8 @@ function runReport(
       `_${assignment?.provider ?? result.seat} · ${String(Math.round(result.ms / 100) / 10)}s_`,
       '',
       result.error === undefined ? result.text : `> **failed:** ${result.error}`,
+      ...(result.review === undefined ? [] : ['', `Paid review: ${result.review}`]),
+      ...(result.candidates ?? []).map(candidate => `Candidate ${candidate.seat}: ${candidate.root} (${String(candidate.files.length)} files)`),
       '',
     )
   }
@@ -294,7 +317,7 @@ async function decompose(
 ): Promise<{ tasks: readonly SubTask[]; problems: readonly string[] }> {
   const reply = await askSeat(
     planner,
-    directDecomposePrompt(options.query, enabled.map(worker => worker.provider)),
+    directDecomposePrompt(options.query, enabled.map(worker => worker.provider), options.profile),
     options.apiKey,
     options.signal,
     options.timeoutMs,
@@ -317,7 +340,8 @@ async function decompose(
  * @returns what happened, and the report to show.
  */
 export async function runSwarm(options: SwarmRunOptions): Promise<SwarmResult> {
-  const roster = seatRoster(options.seats, options.overrides)
+  const fullRoster = seatRoster(options.seats, options.overrides)
+  const roster = options.profile === 'fastest' ? fullRoster.filter(worker => worker.costClass !== 'free') : fullRoster
   const enabled = roster.filter(worker => worker.enabled)
   const empty = { query: options.query, tasks: [], problems: [], assignments: [], results: [] }
 
@@ -335,8 +359,9 @@ export async function runSwarm(options: SwarmRunOptions): Promise<SwarmResult> {
   // never be planned by a seat the user switched off.
   const workerSeats = options.seats.filter(seat => enabled.some(worker => worker.provider === seat.id))
   const planner = choosePlanner(
-    workerSeats.map(seat => ({ ...seat, enabled: true })),
+    workerSeats.filter(seat => options.profile === undefined || seat.free !== true).map(seat => ({ ...seat, enabled: true })),
     options.planner,
+    options.winner,
   )
   if (planner === undefined && options.tasks === undefined) {
     return {
@@ -349,6 +374,20 @@ export async function runSwarm(options: SwarmRunOptions): Promise<SwarmResult> {
   const decomposition = options.tasks === undefined
     ? await decompose(options, planner as SeatConfig, enabled)
     : { tasks: options.tasks, problems: [] as readonly string[] }
+  // A graph that already failed parsing is not re-validated: the profile rules
+  // would pile second-order complaints onto a shape that never formed.
+  const graphProblems = [
+    ...decomposition.problems,
+    ...(decomposition.problems.length === 0 ? validateGraph(decomposition.tasks, options.profile) : []),
+  ]
+  if (options.profile !== undefined) {
+    for (const task of decomposition.tasks) {
+      const matching = fullRoster.filter(worker => worker.enabled && (worker.kinds.includes('any') || worker.kinds.includes(inferKind(task))))
+      if (!fullRoster.some(worker => worker.enabled && worker.costClass !== 'free' && (worker.kinds.includes('any') || worker.kinds.includes('review')))) graphProblems.push(`unit ${task.id} requires an enabled paid reviewer`)
+      if (options.profile === 'economy' && matching.filter(worker => worker.costClass === 'free').length < 2) graphProblems.push(`unit ${task.id} requires two eligible free contestants`)
+    }
+  }
+  if (graphProblems.length > 0) return { ...empty, phase: 'blocked', tasks: decomposition.tasks, problems: graphProblems, report: blockedReport(options.query, graphProblems) }
   // An empty graph always arrives with a problem attached — a planning seat
   // that failed, a reply with no json in it, or `validateGraph` rejecting what
   // was there — so the problems are the whole reason a run stops here.
@@ -362,15 +401,47 @@ export async function runSwarm(options: SwarmRunOptions): Promise<SwarmResult> {
     }
   }
 
-  const plan = assignWorkers(decomposition.tasks, roster)
-  const estimate = estimateExecution(
-    decomposition.tasks,
+  const routed = decomposition.tasks.map((task) => {
+    const picked = options.picked?.split(',').find(id => roster.some(worker => worker.enabled && worker.provider === id && (worker.kinds.includes('any') || worker.kinds.includes(inferKind(task)))))
+    return task.tier === 'ui' && picked !== undefined ? { ...task, provider: picked } : task
+  })
+  // Fastest ignores cost outright — every remaining seat is already paid for,
+  // so ranking them by cost class would just reintroduce the subscription
+  // preference this profile exists to avoid. The one preference it keeps is
+  // earned by the run itself: the seat whose approach won the plan vote is
+  // the one that best understands what the code units are actually building,
+  // never a static opinion about which model is better at code.
+  const specialists: ReadonlyMap<WorkKind, string> | undefined = options.profile === 'fastest' && options.winner !== undefined
+    ? new Map([['code', options.winner]])
+    : undefined
+  const earned: EarnedPreference | undefined = options.profile === 'fastest'
+    ? { ignoreCost: true, specialists }
+    : undefined
+  const plan = assignWorkers(routed, roster, earned)
+  const costTasks = plan.assignments.flatMap((entry) => {
+    if (options.profile === undefined) return [{ ...entry.task, provider: entry.provider }]
+    const matching = fullRoster.filter(worker => worker.enabled && (worker.kinds.includes('any') || worker.kinds.includes(inferKind(entry.task))))
+    const paid = fullRoster.filter(worker => worker.enabled && worker.costClass !== 'free')
+    // Price the most expensive paid route conservatively: review and the
+    // fallback are part of the approved envelope, even when unused.
+    const paidProvider = [...paid].sort((a, b) => {
+      const rate = (id: string) => { if (paid.find(worker => worker.provider === id)?.costClass === 'included') return 0; const model = options.seats.find(seat => seat.id === id)?.model; const price = model === undefined ? undefined : options.pricing.get(model); return price === undefined ? Number.POSITIVE_INFINITY : price.prompt * 4 + price.completion }
+      return rate(b.provider) - rate(a.provider)
+    })[0]?.provider
+    const providers = options.profile === 'economy'
+      ? [...matching.filter(worker => worker.costClass === 'free').flatMap(worker => [worker.provider, worker.provider, worker.provider]), paidProvider, paidProvider, paidProvider, paidProvider]
+      : [entry.provider, entry.provider, paidProvider]
+    return providers.map((provider, index) => ({ ...entry.task, id: `${entry.task.id}-call-${String(index)}`, dependsOn: [], provider }))
+  })
+  const pricedEstimate = estimateExecution(
+    costTasks,
     providerCosts(roster, options.seats),
     options.pricing,
     // Units naming no worker run on the first enabled seat, which is what
     // assignment does, so the estimate prices them the same way.
     enabled[0]?.provider ?? '',
   )
+  const estimate = options.profile === undefined ? pricedEstimate : { ...pricedEstimate, countsCalls: true, waveSizes: executionWaves(decomposition.tasks).map(wave => wave.length), caveats: [...pricedEstimate.caveats.map(text => text.replaceAll('unit(s)', 'seat call(s)').replaceAll('each unit', 'each seat call')), 'Mode estimate includes candidate source reads, selection, paid reviews and the bounded fallback; wave sizes count work units. Unused calls are not spent.'] }
 
   if (plan.unassigned.length > 0) {
     return {
@@ -393,7 +464,8 @@ export async function runSwarm(options: SwarmRunOptions): Promise<SwarmResult> {
       tasks: decomposition.tasks,
       assignments: plan.assignments,
       estimate,
-      report: planReport(options.query, decomposition.tasks, plan.assignments, estimate, false),
+      report: planReport(options.query, decomposition.tasks, plan.assignments, estimate, false)
+        + (options.profile === undefined ? '' : `\n\nMode: ${options.profile}. ${options.profile === 'economy' ? 'Every unit is contested by all eligible free seats; one candidate and one selection call per free seat, with at most one paid fallback candidate and two paid reviews per unit.' : 'One paid candidate and one paid review per unit, with independent units run in parallel.'} Each candidate may make one additional call to read source. The estimate includes those calls. Economy can be slow; free seats may take 420 seconds per call. Candidate files stay in staging.`),
     }
   }
 
@@ -406,11 +478,17 @@ export async function runSwarm(options: SwarmRunOptions): Promise<SwarmResult> {
     const started = done.slice()
     const batch = await fanOut(
       wave.map(task => async (): Promise<SwarmUnitResult> => {
+        const failedDependency = started.find(unit => task.dependsOn.includes(unit.task.id) && unit.error !== undefined)
+        if (failedDependency !== undefined) return { task, seat: '', text: '', error: `dependency ${failedDependency.task.id} failed`, ms: 0 }
         const assignment = plan.assignments.find(entry => entry.task.id === task.id)
         const seatId = assignment?.provider ?? enabled[0]?.provider ?? ''
         const seat = bySeat.get(seatId)
         if (seat === undefined) {
           return { task, seat: seatId, text: '', error: `no seat "${seatId}"`, ms: 0 }
+        }
+        if (options.profile !== undefined) {
+          const eligible = fullRoster.filter(worker => worker.enabled)
+          return await runUnitContest(options, task, started, eligible, seat)
         }
         const roots = options.fileRoots ?? []
         const canRead = options.files !== undefined && roots.length > 0

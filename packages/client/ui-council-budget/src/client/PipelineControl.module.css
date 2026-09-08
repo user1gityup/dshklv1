@@ -1,4 +1,4 @@
-/* Pipeline control, docked above the composer with the swarm roster. */
+/* Pipeline control, pinned in the conversation column's top band. */
 
 .panel {
   display: flex;
@@ -105,10 +105,10 @@
 }
 
 /* The exact text the button will send, so nothing is sent unseen. A saved run
-   can carry a page of text, and the panel is docked above the composer, so the
-   preview is capped and scrolls inside itself: an unbounded one would push the
-   composer off the window and the panel would grow taller than what it docks
-   to. `overflow-wrap: anywhere` is for the other shape of long text — one
+   can carry a page of text, and the panel is pinned above the scrollport, so
+   the preview is capped and scrolls inside itself: an unbounded one would eat
+   the transcript's height permanently, since nothing about this band scrolls
+   away. `overflow-wrap: anywhere` is for the other shape of long text — one
    unbroken run of characters with no space to break at, which would otherwise
    widen the panel instead of wrapping in it. */
 .preview {
@@ -202,4 +202,79 @@
   border-radius: 4px;
   color: var(--dsw-alias-label-secondary);
   background: var(--dsw-alias-interactive-bg-active);
+}
+
+/* ---- The fold ----------------------------------------------------------
+   The band is pinned, so height is the only thing a minimize can give back.
+   Folding leaves the head row: the title, the run's state on one line, and the
+   control that put it there. */
+
+/* The head row when the panel carries a fold control: title cluster on the
+   left, the control hard right, so the button lands in the same place open or
+   shut and the eye never hunts for it. */
+.foldRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.fold {
+  flex: none;
+  margin-left: auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--dsw-alias-label-secondary);
+  background: transparent;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 6px;
+}
+
+.fold:hover {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover-accent);
+}
+
+/* Folded, this is the only evidence the chain has stopped to ask something.
+   It sits between the title and the state line so it is read first, and it is
+   a word plus a lamp rather than a bare dot: a dot alone says "something", and
+   the whole point is to say WHICH something is waiting inside. */
+.pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  padding: 1px 8px 1px 6px;
+  border-radius: 999px;
+  background: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-bg-layer-2);
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pendingDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentcolor;
+  animation: pending-pulse 1.8s ease-in-out infinite;
+}
+
+/* Motion is what separates "waiting on you" from a static badge, but it is the
+   only moving thing in a pinned panel, so it stays slow — and stops entirely
+   for anyone who asked it to. */
+@keyframes pending-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pendingDot {
+    animation: none;
+  }
 }

@@ -75,7 +75,7 @@ function blendedRate(
 ): number | undefined {
   const rates: number[] = []
   for (const seat of seats) {
-    if (!seat.enabled || seat.transport !== 'openrouter' || seat.model === undefined) continue
+    if (!seat.enabled || seat.transport !== 'openrouter' || seat.free === true || seat.model === undefined) continue
     const price = pricing.get(seat.model)
     if (price === undefined) continue
     // One output token also drags PROMPT_RATIO input tokens along with it.
@@ -101,7 +101,10 @@ export function projectCapacity(
 ): Capacity {
   const caveats: string[] = []
   const rate = blendedRate(seats, pricing)
-  const hostedSeats = seats.filter(seat => seat.enabled && seat.transport === 'openrouter').length
+  // Free seats consume none of the OpenRouter budget, so counting them here
+  // would divide the budget across seats that never draw on it and understate
+  // what it buys.
+  const hostedSeats = seats.filter(seat => seat.enabled && seat.transport === 'openrouter' && seat.free !== true).length
 
   let hostedTokensPerMonth = 0
   if (rate === undefined || rate <= 0) {

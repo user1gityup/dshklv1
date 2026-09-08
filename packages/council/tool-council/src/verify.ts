@@ -74,6 +74,46 @@ const BLOCKED_STATUSES: ReadonlySet<number> = new Set([401, 403, 405, 429])
 const MAX_PENALTY = 0.9
 
 /**
+ * Hosts no web fetch can speak for.
+ *
+ * A seat asked about the running app cites `http://localhost:3080`, which is
+ * a correct reference to the reader's own machine and not a claim about the
+ * public web. Fetching it proves nothing either way — the seam runs somewhere
+ * else, and a hit would be the host's own port rather than the seat's — so
+ * these are reported unchecked and cost nothing in the tally. Measured: two
+ * seats were scored down 20% each for citing the very URL the question named.
+ */
+const UNVERIFIABLE_HOSTS = /^(?:localhost|127(?:\.\d+){3}|\[?::1\]?|0\.0\.0\.0|.*\.local|.*\.localhost)$/i
+
+/**
+ * Decide whether a URL is checkable from a general web fetch at all.
+ * @param url - the cited URL.
+ * @returns true when no fetch result would be evidence either way.
+ */
+function unverifiable(url: string): boolean {
+  try {
+    return UNVERIFIABLE_HOSTS.test(new URL(url).hostname)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Tell a broken seam apart from a broken link.
+ *
+ * The web seam reports its own failures with a `WEB_PROVIDER_*` code, and every
+ * one of them means the check never happened. Routing on the code rather than
+ * the message is what keeps this from turning into string matching the moment
+ * the wording changes.
+ * @param error - whatever the seam threw.
+ * @returns true when the seam, not the URL, is the reason for the failure.
+ */
+function seamUnusable(error: unknown): boolean {
+  const code: unknown = (error as { code?: unknown } | null)?.code
+  return typeof code === 'string' && code.startsWith('WEB_PROVIDER_')
+}
+
+/**
  * Tool-call shapes models emit when they believe they have tools.
  * Deliberately narrow: prose *about* searching is not a fabricated call, so
  * these all require syntax a model would only produce to invoke something.
@@ -184,6 +224,10 @@ export async function auditDraft(
       citations.push({ url, status: 'evidence' })
       continue
     }
+    if (unverifiable(url)) {
+      citations.push({ url, status: 'unchecked', detail: 'local address, not checkable from here' })
+      continue
+    }
     if (seam === undefined || checks >= MAX_CHECKS) {
       citations.push({ url, status: 'unchecked', detail: seam === undefined ? 'no fetch provider' : 'over the per-draft check budget' })
       continue
@@ -207,7 +251,15 @@ export async function auditDraft(
       }
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'fetch failed'
-      citations.push({ url, status: 'unreachable', detail: detail.slice(0, 120) })
+      // A seam with no provider behind it fails every URL identically. That is
+      // this host's configuration, not the seat's citation, and scoring it as
+      // a dead link would penalise every seat that cited anything on a machine
+      // where no web provider is registered.
+      if (seamUnusable(error)) {
+        citations.push({ url, status: 'unchecked', detail: detail.slice(0, 120) })
+      } else {
+        citations.push({ url, status: 'unreachable', detail: detail.slice(0, 120) })
+      }
     }
   }
 

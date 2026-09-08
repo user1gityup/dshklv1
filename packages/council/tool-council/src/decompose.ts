@@ -27,6 +27,9 @@ export interface SubTask {
   readonly dependsOn: readonly string[]
   /** Subagent provider suggested for this unit, when one is a better fit. */
   readonly provider?: string | undefined
+  readonly tier?: 'ui' | 'general' | undefined
+  readonly acceptance?: readonly string[] | undefined
+  readonly files?: readonly string[] | undefined
 }
 
 /** How the decomposition is produced. */
@@ -80,6 +83,7 @@ ${answer}`
 export function directDecomposePrompt(
   query: string,
   providers: readonly string[],
+  profile?: 'economy' | 'fastest',
 ): string {
   return `Break the request below into units of work that can run in parallel.
 
@@ -88,6 +92,7 @@ stands and split the work it actually asks for. Do not invent scope it does
 not ask for, and do not answer it here — this step only divides it up.
 
 ${shape(providers)}
+${profile === undefined ? '' : `\nAlso include acceptance (nonempty array of verifiable conditions), files (array of target paths), and tier (ui or general) on every unit. ${profile === 'economy' ? 'Use few large, tightly specified units. Each unit will be contested by free workers and reviewed by paid seats.' : 'Maximize independent wave width. Each unit gets one paid worker. Identify UI units explicitly.'}`}
 
 REQUEST:
 ${query}`
@@ -161,7 +166,12 @@ function toTask(raw: unknown): SubTask | undefined {
   const provider = typeof rawProvider === 'string' && rawProvider.trim() !== ''
     ? rawProvider.trim()
     : undefined
-  return { id, title, detail, dependsOn: depends, ...provider === undefined ? {} : { provider } }
+  const strings = (value: unknown): string[] | undefined => Array.isArray(value) && value.every(entry => typeof entry === 'string') ? (value as string[]).map(entry => entry.trim()).filter(Boolean) : undefined
+  return { id, title, detail, dependsOn: depends, ...provider === undefined ? {} : { provider },
+    ...(row['tier'] === 'ui' || row['tier'] === 'general' ? { tier: row['tier'] } : {}),
+    ...(strings(row['acceptance']) === undefined ? {} : { acceptance: strings(row['acceptance']) }),
+    ...(strings(row['files']) === undefined ? {} : { files: strings(row['files']) }),
+  }
 }
 
 /**
@@ -173,7 +183,7 @@ function toTask(raw: unknown): SubTask | undefined {
  * @param tasks - the parsed units.
  * @returns human-readable problems; empty when the graph is executable.
  */
-export function validateGraph(tasks: readonly SubTask[]): readonly string[] {
+export function validateGraph(tasks: readonly SubTask[], profile?: 'economy' | 'fastest'): readonly string[] {
   const problems: string[] = []
   if (tasks.length === 0) return ['no units of work were produced']
   if (tasks.length > MAX_TASKS) {
@@ -181,9 +191,16 @@ export function validateGraph(tasks: readonly SubTask[]): readonly string[] {
   }
 
   const ids = new Set<string>()
+  const owners = new Map<string, string>()
   for (const task of tasks) {
+    if (profile === 'economy' && (task.acceptance === undefined || task.acceptance.length === 0 || task.acceptance.some(entry => entry.trim() === ''))) problems.push(`unit "${task.id}" needs acceptance conditions for economy mode`)
     if (ids.has(task.id)) problems.push(`duplicate unit id "${task.id}"`)
     ids.add(task.id)
+    if (profile !== undefined) for (const file of task.files ?? []) {
+      const owner = owners.get(file)
+      if (owner !== undefined && owner !== task.id) problems.push(`units "${owner}" and "${task.id}" both target ${file}`)
+      owners.set(file, task.id)
+    }
   }
   for (const task of tasks) {
     for (const dep of task.dependsOn) {

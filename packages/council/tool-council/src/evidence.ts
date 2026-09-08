@@ -123,6 +123,47 @@ export async function gatherEvidence(
 export const MAX_QUERIES_PER_SEAT = 3
 /** Total queries run per council, however many seats asked. */
 export const MAX_QUERIES_TOTAL = 8
+/**
+ * Searches the research round runs at once.
+ *
+ * The round's cost is fixed by the query count; its wall time is not. Run one
+ * at a time — which is what this did — five seats asking for three lookups
+ * each becomes eight sequential CLI searches at roughly 15-25s apiece, so the
+ * council sits idle for two to three minutes before a single draft starts.
+ *
+ * Three rather than two: the seam routes across two authenticated CLI lanes,
+ * and a third in flight keeps a lane from going idle in the gap while another
+ * finishes. Higher spawns more CLI processes than the lanes can absorb, which
+ * buys nothing and risks a provider's own rate limit.
+ */
+export const DEFAULT_RESEARCH_CONCURRENCY = 3
+
+/**
+ * Run tasks with a bounded number in flight, preserving input order.
+ *
+ * A worker pool rather than chunked `Promise.all`: one slow search must not
+ * hold back the searches behind it, which is exactly the failure a fixed batch
+ * reintroduces.
+ * @param tasks - the work, in the order results should come back.
+ * @param limit - most tasks to have in flight at once.
+ * @returns each task's result, indexed as the task was.
+ */
+async function pooled<T>(tasks: readonly (() => Promise<T>)[], limit: number): Promise<(T | undefined)[]> {
+  const out: (T | undefined)[] = new Array<T | undefined>(tasks.length).fill(undefined)
+  const width = Math.max(1, Math.min(limit, tasks.length))
+  let next = 0
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = next
+      next += 1
+      const task = tasks[index]
+      if (task === undefined) return
+      out[index] = await task()
+    }
+  }
+  await Promise.all(Array.from({ length: width }, () => worker()))
+  return out
+}
 
 /**
  * Prompt asking a seat what it wants looked up.
@@ -204,6 +245,7 @@ export async function gatherRequested(
   seam: SearchSeam | undefined,
   requests: readonly SeatQueries[],
   signal?: AbortSignal,
+  concurrency: number = DEFAULT_RESEARCH_CONCURRENCY,
 ): Promise<Evidence | undefined> {
   if (seam === undefined) return undefined
 
@@ -220,24 +262,34 @@ export async function gatherRequested(
   const queries = [...asked.keys()].slice(0, MAX_QUERIES_TOTAL)
   if (queries.length === 0) return undefined
 
+  // Every query runs against the same seam, whose traffic director spreads
+  // them across the authenticated CLI lanes — so several run at once on
+  // different subscriptions rather than queueing behind one binary.
+  const answers = await pooled(
+    queries.map(wanted => async (): Promise<{ sources: readonly EvidenceSource[]; summary?: string | undefined } | undefined> => {
+      try {
+        const result = await seam.search({ query: wanted, maxResults: 4 }, signal)
+        return { sources: result.sources, summary: result.content }
+      } catch {
+        // One failed query must not lose the answers to the others.
+        return undefined
+      }
+    }),
+    concurrency,
+  )
+
+  // Numbered after every search settles, in the order the queries were asked
+  // rather than the order they came back. Citation numbers are quoted by the
+  // seats, so they must not depend on which lane happened to answer first.
   const blocks: string[] = []
   const urls: string[] = []
-  for (const wanted of queries) {
-    let sources: readonly EvidenceSource[] = []
-    let summary: string | undefined
-    try {
-      const result = await seam.search({ query: wanted, maxResults: 4 }, signal)
-      sources = result.sources
-      summary = result.content
-    } catch {
-      // One failed query must not lose the answers to the others.
-      continue
-    }
-    if (sources.length === 0) continue
+  queries.forEach((wanted, index) => {
+    const answer = answers[index]
+    if (answer === undefined || answer.sources.length === 0) return
     const owners = asked.get(wanted) ?? []
-    blocks.push(renderQuery(wanted, owners, sources, summary, urls.length))
-    for (const source of sources) urls.push(source.url)
-  }
+    blocks.push(renderQuery(wanted, owners, answer.sources, answer.summary, urls.length))
+    for (const source of answer.sources) urls.push(source.url)
+  })
   if (blocks.length === 0) return undefined
 
   const head = [

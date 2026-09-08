@@ -1,16 +1,18 @@
 /**
  * Seat definitions and the two transports that back them.
  *
- * Two seats are driven by an already-authenticated local CLI, and two by the
- * OpenRouter HTTP API. The council never handles a CLI seat's credentials: the
- * user authenticated that tool once, and the child process inherits the
- * session. Only the OpenRouter transport needs a key, and it reads one from the
- * environment rather than accepting it as an argument.
+ * Some seats are driven by an already-authenticated local CLI, the rest by an
+ * OpenAI-compatible HTTP endpoint. The council never handles a CLI seat's
+ * credentials: the user authenticated that tool once, and the child process
+ * inherits the session. Only a seat calling OpenRouter itself needs a key, and
+ * it reads one from the environment rather than accepting it as an argument; a
+ * seat pointed at a local proxy needs none, because the proxy holds the key.
  */
 
 import { spawn } from 'node:child_process'
+import { connect } from 'node:net'
 import { describeError } from './errors.ts'
-import { statSync } from 'node:fs'
+import { mkdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { SeatId } from './colors.ts'
@@ -38,6 +40,24 @@ export interface SeatConfig {
    */
   readonly args?: readonly string[] | undefined
   /**
+   * For `cli`: what replaces the `{prompt}` entry when the prompt is delivered
+   * on stdin instead of argv, or omitted when the CLI wants the entry gone.
+   *
+   * A council prompt grows with the round: the review prompt carries every
+   * seat's full draft, and a five-seat round on a researched question passed
+   * 32767 characters — the Windows command-line limit — so `spawn` failed with
+   * ENAMETOOLONG and all three CLI seats lost their vote at once. Delivering
+   * the same text on stdin has no such limit. `codex exec` wants `-` to mean
+   * "read the prompt from stdin"; `claude -p` reads stdin whenever no prompt
+   * argument follows, so its entry is dropped instead.
+   */
+  readonly stdinPromptArg?: string | undefined
+  /**
+   * For `openrouter`: how long the streamed answer may go silent before the
+   * seat gives up, overriding {@link DEFAULT_STREAM_IDLE_MS}.
+   */
+  readonly idleMs?: number | undefined
+  /**
    * Seat-specific hard cap, overriding the run's timeout.
    *
    * One global timeout cannot serve a paid seat and a free one equally: a
@@ -58,11 +78,44 @@ export interface SeatConfig {
   /** For `openrouter`: the model identifier to request. */
   readonly model?: string | undefined
   /**
+   * For `openrouter`: chat-completions endpoint, overriding OpenRouter's own.
+   *
+   * The wire format is unchanged — an OpenAI-compatible `/chat/completions`
+   * that streams SSE — so only the URL differs. This is what lets a seat run
+   * against a local proxy without inventing a third transport: a dozen call
+   * sites branch on `transport === 'openrouter'` for prompt shaping, capacity
+   * and estimates, and a new transport value would silently miss some.
+   */
+  readonly baseUrl?: string | undefined
+  /**
+   * This seat costs nothing per token.
+   *
+   * Free is not the same as unpriced. An OpenRouter seat whose model carries
+   * no price row is of *unknown* cost, and the panel says so; a seat marked
+   * free is known to be zero, so it stays out of the metered blend entirely
+   * and the swarm sorts it beside the subscription seats rather than after
+   * them.
+   */
+  readonly free?: boolean | undefined
+  /**
    * For `cli`: a flag that takes a context file path. When set and a memory
    * digest exists, the flag and path are appended to argv, which is far
    * cheaper than pasting the digest into every prompt.
    */
   readonly contextFileFlag?: string | undefined
+  /**
+   * For `cli`: working directory for the child, overriding the host's own.
+   *
+   * An agent CLI discovers project instruction files by walking up from its
+   * working directory. Inheriting the host's cwd therefore feeds the seat
+   * whatever repository DSH happens to be running in — measured at ~8s per
+   * call for `claude -p`, and it changes the answer: a seat handed a project's
+   * instructions will sometimes address those instead of the question. Seats
+   * do not read files themselves anyway (the host reads them and quotes the
+   * text back, resolved against the configured roots), so a neutral directory
+   * costs the seat nothing.
+   */
+  readonly cwd?: string | undefined
   /** Whether this seat participates. */
   readonly enabled: boolean
 }
@@ -113,6 +166,12 @@ export const DEFAULT_SEATS: readonly SeatConfig[] = [
     // not write to the workspace.
     args: ['--allowedTools', 'WebSearch,WebFetch,Read,Glob,Grep', '-p', '{prompt}'],
     contextFileFlag: '--append-system-prompt-file',
+    cwd: join(homedir(), '.dsh', 'seat-cwd'),
+    // 180s is not enough for this seat on a researched round. Measured: the
+    // same model on the free proxy took 130s to draft with 30 shared sources,
+    // and this seat was killed mid-answer at the run's 180s default, producing
+    // nothing. Its ceiling now matches the free seat's rather than the run's.
+    timeoutMs: 420_000,
     enabled: true,
   },
   {
@@ -148,6 +207,13 @@ export const DEFAULT_SEATS: readonly SeatConfig[] = [
     // and the run's 180s default killed it mid-retry. This buys it the room to
     // fall through to another provider rather than fail the round.
     timeoutMs: 420_000,
+    // The transport is `cli` like the paid seat, but the cost is not: the
+    // ANTHROPIC_BASE_URL above sends every request to the local proxy, so no
+    // subscription quota is spent. Without this flag the swarm reads the
+    // transport, calls the seat `included`, and cannot tell it apart from the
+    // subscription it exists to spare.
+    free: true,
+    cwd: join(homedir(), '.dsh', 'seat-cwd'),
     enabled: false,
   },
   {
@@ -156,6 +222,8 @@ export const DEFAULT_SEATS: readonly SeatConfig[] = [
     transport: 'cli',
     command: 'codex',
     args: ['exec', '{prompt}'],
+    // `codex exec -` reads the prompt from stdin.
+    stdinPromptArg: '-',
     enabled: true,
   },
   {
@@ -163,6 +231,12 @@ export const DEFAULT_SEATS: readonly SeatConfig[] = [
     name: 'Kimi',
     transport: 'openrouter',
     model: 'moonshotai/kimi-k2',
+    // A drafting round asks for thousands of output tokens, and a hosted seat
+    // pays routing and queueing on top of generation. Measured 2026-09-07: a
+    // stage-2 draft was cut off at the run's 180s default while the CLI seats,
+    // which carry their own caps, finished the same round in 117-166s. The
+    // hosted seats lost their vote for want of a cap of their own.
+    timeoutMs: 420_000,
     enabled: true,
   },
   {
@@ -170,7 +244,29 @@ export const DEFAULT_SEATS: readonly SeatConfig[] = [
     name: 'DeepSeek v4',
     transport: 'openrouter',
     model: 'deepseek/deepseek-v4-pro',
+    timeoutMs: 420_000,
     enabled: true,
+  },
+  {
+    id: 'openrouter-free',
+    name: 'OpenRouter Free',
+    transport: 'openrouter',
+    // The local free-model proxy speaks the same OpenAI-compatible wire
+    // format, so only the endpoint differs. It chooses the model itself from
+    // a warm pool of zero-priced OpenRouter models and rewrites the `model`
+    // field on the way through, which is why this placeholder never reaches
+    // anything that would reject it.
+    baseUrl: 'http://127.0.0.1:8080/v1/chat/completions',
+    model: 'proxy-auto',
+    free: true,
+    // Same measurement as the other free seat: zero-priced providers retry
+    // through capacity refusals before answering, and the run's default cap
+    // kills them mid-retry.
+    timeoutMs: 420_000,
+    // Off by default, for the reason `free-claude` is: it needs a local
+    // process running, and a seat that fails on every run of a fresh install
+    // is worse than one the user turns on.
+    enabled: false,
   },
 ]
 
@@ -218,7 +314,14 @@ const WINDOWS_EXTENSIONS = ['.exe', '.com', '.cmd', '.bat', ''] as const
  */
 const NPM_BIN_PATHS: Readonly<Record<string, readonly string[]>> = {
   claude: ['@anthropic-ai/claude-code/bin/claude.exe'],
-  codex: ['@openai/codex/bin/codex.exe'],
+  // Codex moved its native binary into a per-platform sub-package; `bin/` now
+  // holds only a JS wrapper. The old path stays last so an older install still
+  // resolves.
+  codex: [
+    '@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe',
+    '@openai/codex/node_modules/@openai/codex-win32-arm64/vendor/aarch64-pc-windows-msvc/bin/codex.exe',
+    '@openai/codex/bin/codex.exe',
+  ],
 }
 
 /** Directories npm uses for global packages on this platform. */
@@ -275,6 +378,22 @@ export function executableCandidates(command: string): readonly string[] {
   return real === undefined ? spellings : [real, ...spellings]
 }
 
+/**
+ * Make sure a seat's working directory exists.
+ * @param dir - the configured directory.
+ * @returns the same directory, or the host's cwd when it cannot be created.
+ */
+function ensureDir(dir: string): string {
+  try {
+    mkdirSync(dir, { recursive: true })
+    return dir
+  } catch {
+    // Falling back to the host's cwd loses the isolation but still runs, which
+    // is the right trade for a seat that would otherwise fail outright.
+    return process.cwd()
+  }
+}
+
 /** Result of one child-process run. */
 interface RunResult {
   readonly stdout: string
@@ -297,6 +416,8 @@ function runOnce(
   signal: AbortSignal | undefined,
   timeoutMs: number,
   env: Readonly<Record<string, string>> | undefined,
+  cwd: string | undefined,
+  input?: string | undefined,
 ): Promise<RunResult> {
   return new Promise<RunResult>((resolve) => {
     // `shell: false` is the security boundary: the prompt is argv data, never
@@ -309,6 +430,22 @@ function runOnce(
       child = spawn(command, [...args], {
         shell: false,
         windowsHide: true,
+        // The child gets NO stdin. Node's default is an open pipe nobody ever
+        // writes to, and an agent CLI that accepts a piped prompt reads it:
+        // `codex exec` prints "Reading additional input from stdin..." and
+        // blocks forever, so the seat produced no output and died at the
+        // timeout with the run looking merely slow. Closing stdin turns that
+        // into the EOF the CLI is waiting for. `claude -p` never waited on
+        // stdin, which is why only one seat ever showed the symptom.
+        //
+        // The exception is a prompt too long for argv: then stdin IS the
+        // delivery channel, and it is written and closed immediately below, so
+        // the CLI still sees an EOF rather than an open pipe nobody feeds.
+        stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+        // Only when the seat asked for one; otherwise inherit the host's cwd.
+        // Created on demand: spawn throws ENOENT for a missing cwd, and a seat
+        // must not depend on a directory someone remembered to make.
+        ...cwd === undefined ? {} : { cwd: ensureDir(cwd) },
         // Layered over the parent environment rather than replacing it: the
         // child still needs PATH and the rest of it to start at all.
         ...env === undefined ? {} : { env: { ...process.env, ...env } },
@@ -316,6 +453,13 @@ function runOnce(
     } catch (error) {
       resolve({ stdout: '', stderr: '', code: null, spawnError: describeError(error) })
       return
+    }
+    if (input !== undefined) {
+      // A child that exits before reading it all makes this write fail. That is
+      // the child's story to tell through its exit code and stderr, not a
+      // reason to crash the host on an unhandled EPIPE.
+      child.stdin?.on('error', () => {})
+      child.stdin?.end(input)
     }
     let stdout = ''
     let stderr = ''
@@ -346,6 +490,51 @@ function runOnce(
 }
 
 /**
+ * Longest command line to hand the platform before moving the prompt to stdin.
+ *
+ * Windows caps a command line at 32767 UTF-16 units for the whole line —
+ * executable path, quoting, and every argument — and `spawn` fails with
+ * ENAMETOOLONG rather than truncating. POSIX caps a SINGLE argument at
+ * MAX_ARG_STRLEN, 128 KiB. Both limits are cut well short here: the cost of
+ * switching early is nothing, and the cost of guessing high is a whole round
+ * of seats failing at once.
+ */
+const ARGV_LIMIT = process.platform === 'win32' ? 24_000 : 96_000
+
+/**
+ * Measure a command line the way the platform will.
+ * @param command - the executable, as spawned.
+ * @param args - fully-formed argv.
+ * @returns character length including per-argument quoting and separators.
+ */
+function commandLineLength(command: string, args: readonly string[]): number {
+  // +3 per argument: two quotes and a separating space, which is what argv
+  // joining costs on Windows and a safe overestimate everywhere else.
+  return args.reduce((total, arg) => total + arg.length + 3, command.length)
+}
+
+/**
+ * Rewrite an argv template for a prompt that travels on stdin instead.
+ * @param template - the seat's argv template, containing `{prompt}`.
+ * @param stdinPromptArg - what the CLI wants in place of the prompt, if anything.
+ * @returns argv with the prompt entry replaced or removed.
+ */
+function stdinArgv(
+  template: readonly string[],
+  stdinPromptArg: string | undefined,
+): readonly string[] {
+  const out: string[] = []
+  for (const entry of template) {
+    if (entry !== '{prompt}') {
+      out.push(entry)
+      continue
+    }
+    if (stdinPromptArg !== undefined) out.push(stdinPromptArg)
+  }
+  return out
+}
+
+/**
  * Ask a CLI-backed seat, trying each platform candidate until one starts.
  *
  * A missing executable is reported as a seat failure rather than thrown: one
@@ -372,12 +561,20 @@ export async function askCliSeat(
   const base = template.map(entry => (entry === '{prompt}' ? prompt : entry))
   // A CLI that can read a context file gets one; the digest never enters the
   // prompt for those seats, so shared memory costs no prompt construction.
-  const args = contextFile !== undefined && seat.contextFileFlag !== undefined
-    ? [...base, seat.contextFileFlag, contextFile]
-    : base
+  const tail = contextFile !== undefined && seat.contextFileFlag !== undefined
+    ? [seat.contextFileFlag, contextFile]
+    : []
+  const args = [...base, ...tail]
+  // A prompt that would blow the platform's command-line limit goes on stdin
+  // instead. Reviews are where this bites: that prompt carries every seat's
+  // full draft, so the round that most needs its votes is the one that loses
+  // them.
+  const overLimit = commandLineLength(command, args) > ARGV_LIMIT
+  const argv = overLimit ? [...stdinArgv(template, seat.stdinPromptArg), ...tail] : args
+  const input = overLimit ? prompt : undefined
   let lastError = 'not found'
   for (const candidate of executableCandidates(command)) {
-    const result = await runOnce(candidate, args, signal, timeoutMs, seat.env)
+    const result = await runOnce(candidate, argv, signal, timeoutMs, seat.env, seat.cwd, input)
     // ENOENT means this spelling does not exist; try the next candidate.
     // EINVAL is Node refusing to spawn a batch shim without a shell; treat it
     // as "wrong spelling" so the next candidate gets a turn.
@@ -420,25 +617,43 @@ export async function askOpenRouterSeat(
   webMaxResults?: number | undefined,
 ): Promise<SeatReply> {
   const started = Date.now()
-  if (apiKey === undefined || apiKey === '') {
+  // A seat pointed at a local proxy authenticates to that proxy, and the proxy
+  // holds the upstream key itself. Demanding a key here would make the free
+  // seat unusable on a machine that has no OpenRouter key at all — which is
+  // the case it exists for.
+  const endpoint = seat.baseUrl ?? OPENROUTER_URL
+  if (endpoint === OPENROUTER_URL && (apiKey === undefined || apiKey === '')) {
     return { seat: seat.id, text: '', error: 'no OpenRouter API key available', ms: 0 }
   }
   const model = seat.model
   if (model === undefined || model === '') {
     return { seat: seat.id, text: '', error: 'no model configured', ms: 0 }
   }
-  const timeout = AbortSignal.timeout(timeoutMs)
-  const composite = signal === undefined ? timeout : AbortSignal.any([signal, timeout])
+  // Two independent limits, because a long answer and a dead connection fail
+  // differently. `timeoutMs` bounds the whole call; the idle timer bounds the
+  // gap between tokens, which is what actually distinguishes a model still
+  // writing from a socket nobody is on any more.
+  const overall = AbortSignal.timeout(timeoutMs)
+  const stall = new AbortController()
+  const composite = AbortSignal.any(signal === undefined ? [overall, stall.signal] : [signal, overall, stall.signal])
   try {
-    const response = await fetch(OPENROUTER_URL, {
+    const response = await fetch(endpoint, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        ...apiKey === undefined || apiKey === '' ? {} : { 'Authorization': `Bearer ${apiKey}` },
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         model,
         max_tokens: maxTokens,
+        // Streamed, not because the text is shown as it arrives — the council
+        // reports whole answers — but because a single non-streaming POST that
+        // takes minutes is a connection sitting idle, and something between
+        // here and the provider closes it: measured as
+        // `fetch failed caused by other side closed`. A stream carries bytes
+        // the whole time, so nothing along the path judges it dead.
+        stream: true,
+        stream_options: { include_usage: true },
         messages: [{ role: 'user', content: prompt }],
         // Live search, when the caller asks for it. This is what lets a
         // hosted seat check a current fact instead of answering from training
@@ -459,51 +674,283 @@ export async function askOpenRouterSeat(
         ms: Date.now() - started,
       }
     }
-    const body = await response.json() as {
-      model?: unknown
-      choices?: readonly { message?: { content?: unknown; reasoning?: unknown; annotations?: unknown } }[]
-      usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; cost?: unknown }
-    }
-    const num = (value: unknown): number | undefined =>
-      typeof value === 'number' && Number.isFinite(value) ? value : undefined
-    const usage: SeatUsage = {
-      inputTokens: num(body.usage?.prompt_tokens),
-      outputTokens: num(body.usage?.completion_tokens),
-      // OpenRouter returns the charged amount per request; this is the only
-      // trustworthy cost figure available, so it is recorded verbatim.
-      costUsd: num(body.usage?.cost),
-      model: typeof body.model === 'string' ? body.model : model,
-    }
-    const first = body.choices?.[0]?.message
-    const content = typeof first?.content === 'string' ? first.content : ''
+    // `stream: true` is a request, not a guarantee: a proxy or a provider that
+    // ignores it answers with one whole JSON body, and reading that as an
+    // event stream would find no events and report an empty answer.
+    const streamed = (response.headers.get('content-type') ?? '').includes('text/event-stream')
+    const stream = streamed
+      ? await readSseStream(response, stall, seat.idleMs ?? DEFAULT_STREAM_IDLE_MS)
+      : await readWholeBody(response)
+    const usage: SeatUsage = { ...stream.usage, model: stream.model ?? model }
     // Reasoning-only replies (empty content, non-empty reasoning) still carry
     // an answer worth reporting rather than discarding as blank.
-    const reasoning = typeof first?.reasoning === 'string' ? first.reasoning : ''
-    const text = (content || reasoning).trim()
+    const text = (stream.content || stream.reasoning).trim()
     if (text === '') {
       return { seat: seat.id, text: '', error: 'empty response', ms: Date.now() - started, usage }
-    }
-    // Surface what the seat actually consulted. A seat that searched and a
-    // seat that recalled look identical in the text; the citations are the
-    // only way the audit can tell them apart.
-    const cited: string[] = []
-    const annotations = (first as { annotations?: unknown } | undefined)?.annotations
-    if (Array.isArray(annotations)) {
-      for (const entry of annotations) {
-        const citation = (entry as { url_citation?: { url?: unknown } }).url_citation
-        if (typeof citation?.url === 'string') cited.push(citation.url)
-      }
     }
     return {
       seat: seat.id,
       text,
       ms: Date.now() - started,
       usage,
-      ...cited.length === 0 ? {} : { citedUrls: cited },
+      ...stream.cited.length === 0 ? {} : { citedUrls: stream.cited },
     }
   } catch (error) {
     return { seat: seat.id, text: '', error: describeError(error), ms: Date.now() - started }
   }
+}
+
+/**
+ * How long a reachability probe waits before calling a backend dead.
+ *
+ * A loopback TCP connect either answers immediately or is refused
+ * immediately; anything slower than this is a port that will not serve a
+ * council round either.
+ */
+export const PROBE_TIMEOUT_MS = 1500
+
+/** A loopback backend a CLI seat is pointed at. */
+export interface SeatBackend {
+  readonly host: string
+  readonly port: number
+  /** Origin as written, for the failure message. */
+  readonly origin: string
+}
+
+/**
+ * The local backend a CLI seat routes through, when it routes through one.
+ *
+ * Only loopback addresses are returned. A probe exists to catch a proxy the
+ * user forgot to start, which is always local; probing a remote host would
+ * turn a slow network into a seat the council silently drops.
+ * @param seat - the seat's resolved routing.
+ * @returns the backend to probe, or undefined when there is nothing local to probe.
+ */
+export function loopbackBackend(seat: SeatConfig): SeatBackend | undefined {
+  // A hosted seat pointed at a local proxy is as exposed to that proxy being
+  // down as a CLI seat is, and fails the same slow way: the request sits until
+  // the per-seat cap instead of being refused in a millisecond.
+  if (seat.baseUrl !== undefined) return loopbackOf(seat.baseUrl)
+  if (seat.transport !== 'cli') return undefined
+  const env = seat.env
+  if (env === undefined) return undefined
+  for (const [key, value] of Object.entries(env)) {
+    if (!key.endsWith('BASE_URL')) continue
+    const backend = loopbackOf(value)
+    if (backend === undefined) continue
+    return backend
+  }
+  return undefined
+}
+
+/**
+ * Read a loopback backend out of one configured URL.
+ * @param value - the URL as written.
+ * @returns the backend to probe, or undefined when it is not a loopback address.
+ */
+function loopbackOf(value: string): SeatBackend | undefined {
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return undefined
+  }
+  const host = url.hostname
+  if (host !== '127.0.0.1' && host !== 'localhost' && host !== '[::1]' && host !== '::1') return undefined
+  const port = url.port === '' ? (url.protocol === 'https:' ? 443 : 80) : Number(url.port)
+  if (!Number.isInteger(port) || port <= 0) return undefined
+  return { host: host === '[::1]' ? '::1' : host, port, origin: `${url.protocol}//${url.host}` }
+}
+
+/**
+ * Check that a seat's local backend is listening before the round pays for it.
+ *
+ * A CLI agent does not fail fast on a dead backend: measured against a stopped
+ * proxy, `claude -p` retried a refused connection for 180s before returning an
+ * error, and because a round waits for every seat, that one dead seat set the
+ * wall time for the whole round — twice, once per round. A connect that is
+ * refused in a millisecond says the same thing.
+ * @param seat - the seat to probe.
+ * @param timeoutMs - how long to wait for the connect.
+ * @returns undefined when the seat is usable, else why it is not.
+ */
+export async function probeSeat(seat: SeatConfig, timeoutMs: number = PROBE_TIMEOUT_MS): Promise<string | undefined> {
+  const backend = loopbackBackend(seat)
+  if (backend === undefined) return undefined
+  return await new Promise<string | undefined>((resolve) => {
+    const socket = connect({ host: backend.host, port: backend.port })
+    let settled = false
+    const finish = (reason: string | undefined): void => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolve(reason)
+    }
+    socket.setTimeout(timeoutMs, () => {
+      finish(`${backend.origin} did not answer within ${String(timeoutMs)}ms`)
+    })
+    socket.once('connect', () => {
+      finish(undefined)
+    })
+    socket.once('error', (error) => {
+      finish(`${backend.origin} is not accepting connections (${describeError(error)})`)
+    })
+  })
+}
+
+/**
+ * How long a stream may go silent before it is judged dead.
+ *
+ * Generation itself never pauses this long: a model that has stopped emitting
+ * for a minute and a half has been cut off somewhere upstream, and waiting out
+ * the whole per-seat cap only delays the round for an answer that is not
+ * coming.
+ */
+export const DEFAULT_STREAM_IDLE_MS = 90_000
+
+/** What one streamed completion produced. */
+interface StreamedReply {
+  readonly content: string
+  readonly reasoning: string
+  readonly cited: readonly string[]
+  readonly usage: { inputTokens?: number | undefined; outputTokens?: number | undefined; costUsd?: number | undefined }
+  readonly model?: string | undefined
+}
+
+/** Read a number, or nothing when the field is missing or not finite. */
+function finite(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+/** One streamed chunk's shape, as far as this reader cares. */
+interface SseChunk {
+  model?: unknown
+  choices?: readonly {
+    delta?: { content?: unknown; reasoning?: unknown; annotations?: unknown }
+    message?: { content?: unknown; reasoning?: unknown; annotations?: unknown }
+  }[]
+  usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; cost?: unknown }
+}
+
+/** Collect `url_citation` urls out of a delta's annotations. */
+function citationsOf(annotations: unknown, into: string[]): void {
+  if (!Array.isArray(annotations)) return
+  for (const entry of annotations) {
+    const citation = (entry as { url_citation?: { url?: unknown } }).url_citation
+    if (typeof citation?.url === 'string') into.push(citation.url)
+  }
+}
+
+/**
+ * Read a completion that arrived as one JSON body rather than a stream.
+ * @param response - the non-streaming response.
+ * @returns the same shape the stream reader produces.
+ */
+async function readWholeBody(response: Response): Promise<StreamedReply> {
+  const body = await response.json() as SseChunk
+  const choice = body.choices?.[0]
+  const part = choice?.message ?? choice?.delta
+  const cited: string[] = []
+  citationsOf(part?.annotations, cited)
+  return {
+    content: typeof part?.content === 'string' ? part.content : '',
+    reasoning: typeof part?.reasoning === 'string' ? part.reasoning : '',
+    cited,
+    usage: {
+      inputTokens: finite(body.usage?.prompt_tokens),
+      outputTokens: finite(body.usage?.completion_tokens),
+      costUsd: finite(body.usage?.cost),
+    },
+    ...typeof body.model === 'string' ? { model: body.model } : {},
+  }
+}
+
+/**
+ * Assemble one streamed completion.
+ *
+ * OpenRouter's stream is server-sent events: `data:` lines carrying chunks, a
+ * final `data: [DONE]`, and `:` comment lines it sends purely to keep the
+ * connection warm while a provider is still thinking. The comments are the
+ * reason this is worth doing — they are bytes on an otherwise silent socket.
+ * @param response - the streaming response.
+ * @param stall - aborted when the stream goes silent for too long.
+ * @param idleMs - how long silence is tolerated.
+ * @returns the assembled text, citations and usage.
+ */
+async function readSseStream(response: Response, stall: AbortController, idleMs: number): Promise<StreamedReply> {
+  const body = response.body
+  if (body === null) throw new Error('the provider returned no response body')
+  let content = ''
+  let reasoning = ''
+  let model: string | undefined
+  let usage: StreamedReply['usage'] = {}
+  const cited: string[] = []
+  let buffer = ''
+  // The idle timer aborts the fetch, which kills a real socket — but a body
+  // already handed over is not interrupted by that alone, so the read is also
+  // raced against the same signal. Both matter: the abort frees the
+  // connection, the race frees this loop.
+  const stalled = new Promise<never>((_resolve, reject) => {
+    stall.signal.addEventListener('abort', () => {
+      reject(stall.signal.reason instanceof Error ? stall.signal.reason : new Error('the stream stalled'))
+    }, { once: true })
+  })
+  const reader = body.getReader()
+  let idle = setTimeout(() => {
+    stall.abort(new Error(`the stream went silent for ${String(idleMs)}ms`))
+  }, idleMs)
+  const decoder = new TextDecoder()
+  try {
+    for (;;) {
+      const next = await Promise.race([reader.read(), stalled])
+      clearTimeout(idle)
+      if (next.done) break
+      idle = setTimeout(() => {
+        stall.abort(new Error(`the stream went silent for ${String(idleMs)}ms`))
+      }, idleMs)
+      buffer += decoder.decode(next.value, { stream: true })
+      // A network chunk boundary is not a line boundary: keep the tail until
+      // its newline arrives, or a split `data:` line is dropped unparsed.
+      const lines = buffer.split(/\r?\n/)
+      buffer = lines.pop() ?? ''
+      for (const line of lines) {
+        const trimmed = line.trim()
+        // `:` is a comment — the keep-alive. Nothing to parse, and its arrival
+        // has already reset the idle timer above.
+        if (trimmed === '' || trimmed.startsWith(':')) continue
+        if (!trimmed.startsWith('data:')) continue
+        const payload = trimmed.slice('data:'.length).trim()
+        if (payload === '[DONE]') continue
+        let parsed: SseChunk
+        try {
+          parsed = JSON.parse(payload) as SseChunk
+        } catch {
+          continue
+        }
+        if (typeof parsed.model === 'string') model = parsed.model
+        if (parsed.usage !== undefined) {
+          usage = {
+            inputTokens: finite(parsed.usage.prompt_tokens),
+            outputTokens: finite(parsed.usage.completion_tokens),
+            // OpenRouter reports the charged amount on the final chunk; it is
+            // the only trustworthy cost figure available, recorded verbatim.
+            costUsd: finite(parsed.usage.cost),
+          }
+        }
+        const choice = parsed.choices?.[0]
+        // A provider that ignores `stream` answers with a whole message
+        // instead of deltas; take either rather than returning empty.
+        const part = choice?.delta ?? choice?.message
+        if (typeof part?.content === 'string') content += part.content
+        if (typeof part?.reasoning === 'string') reasoning += part.reasoning
+        citationsOf(part?.annotations, cited)
+      }
+    }
+  } finally {
+    clearTimeout(idle)
+    await reader.cancel().catch(() => undefined)
+  }
+  return { content, reasoning, cited, usage, ...model === undefined ? {} : { model } }
 }
 
 /**

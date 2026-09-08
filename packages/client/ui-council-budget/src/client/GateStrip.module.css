@@ -1,0 +1,147 @@
+/* The pending gate, shown at the top of the column while one is open. */
+
+.strip {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+/* Waiting is the state that must not be skimmed past, so it is the only one
+   that draws a heavier edge. Approved and expired are informational. */
+.strip[data-state='waiting'] {
+  border-width: 2px;
+}
+
+.headline {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.label {
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+
+.state {
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* The countdown is the only number here, and a fixed-width one so it does not
+   jitter the row every second. */
+.clock {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* The question can be a whole pipeline prompt; two lines of it is enough to
+   tell one gate from another. */
+.question {
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--dsw-alias-label-secondary);
+  overflow-wrap: anywhere;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.approve,
+.run,
+.discard {
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.approve,
+.run {
+  border-color: transparent;
+  background: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-bg-layer-2);
+}
+
+.run:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.discard {
+  background: none;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.approve:hover,
+.run:hover:not(:disabled),
+.discard:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+/* The versions on offer, one chip each. They wrap rather than scroll: three to
+   five seats is the whole range, and a row that scrolled would hide the very
+   choice the strip exists to ask for. */
+.picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.pick {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  background: none;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.pick:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+/* Picked reads as filled, not merely outlined: aria-pressed carries it for a
+   screen reader, and the fill is what carries it at a glance. */
+.pickOn {
+  border-color: transparent;
+  background: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-bg-layer-2);
+  font-weight: 600;
+}
+
+.pickOn:hover {
+  background: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-bg-layer-2);
+}
+
+.pickSeat {
+  font-size: 0.85rem;
+}
+
+.pickFiles {
+  font-size: 0.72rem;
+  opacity: 0.65;
+}

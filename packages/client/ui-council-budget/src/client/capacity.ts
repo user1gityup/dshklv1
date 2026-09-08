@@ -14,6 +14,13 @@ export interface PanelSeat {
   /** `openrouter` seats are metered; `cli` seats bill a subscription. */
   readonly transport: 'openrouter' | 'cli'
   readonly model?: string | undefined
+  /**
+   * This seat costs nothing per token — an `openrouter` seat routed through a
+   * local free-model proxy. Free is not unpriced: an unpriced seat's cost is
+   * unknown and the panel warns about it, while this one is known to be zero,
+   * so it stays out of the metered blend rather than dragging it down.
+   */
+  readonly free?: boolean | undefined
   readonly enabled: boolean
 }
 
@@ -36,10 +43,13 @@ export const DEFAULT_SEATS: readonly PanelSeat[] = [
   // Free Claude ships disabled: it needs the local proxy running, and a seat
   // that fails on every run of a fresh install is worse than one switched on
   // deliberately.
-  { id: 'free-claude', name: 'Free Claude', transport: 'cli', enabled: false },
+  { id: 'free-claude', name: 'Free Claude', transport: 'cli', free: true, enabled: false },
   { id: 'openai', name: 'OpenAI', transport: 'cli', enabled: true },
   { id: 'kimi', name: 'Kimi', transport: 'openrouter', model: 'moonshotai/kimi-k2', enabled: true },
   { id: 'deepseek', name: 'DeepSeek v4', transport: 'openrouter', model: 'deepseek/deepseek-v4-pro', enabled: true },
+  // Ships disabled for the same reason Free Claude does: it needs the local
+  // free-model proxy running on 127.0.0.1:8080.
+  { id: 'openrouter-free', name: 'OpenRouter Free', transport: 'openrouter', model: 'proxy-auto', free: true, enabled: false },
 ]
 
 /**
@@ -52,18 +62,20 @@ export const DEFAULT_SEATS: readonly PanelSeat[] = [
  * @returns every configured seat, shipped and added.
  */
 export function seatsFrom(section: Record<string, unknown> | undefined): readonly PanelSeat[] {
-  const overrides = (section?.['seats'] ?? {}) as Record<string, { enabled?: boolean; model?: string }>
-  const extras = (section?.['extraSeats'] ?? {}) as Record<string, { name?: string; model?: string; enabled?: boolean }>
+  const overrides = (section?.['seats'] ?? {}) as Record<string, { enabled?: boolean; model?: string; free?: boolean }>
+  const extras = (section?.['extraSeats'] ?? {}) as Record<string, { name?: string; model?: string; free?: boolean; enabled?: boolean }>
   const base = DEFAULT_SEATS.map(seat => ({
     ...seat,
     enabled: overrides[seat.id]?.enabled ?? seat.enabled,
     model: overrides[seat.id]?.model ?? seat.model,
+    free: overrides[seat.id]?.free ?? seat.free,
   }))
   const added: PanelSeat[] = Object.entries(extras).map(([id, extra]) => ({
     id,
     name: extra.name ?? id,
     transport: 'openrouter' as const,
     model: extra.model,
+    free: extra.free,
     enabled: extra.enabled ?? true,
   }))
   return [...base, ...added]
@@ -99,6 +111,8 @@ export interface Projection {
   readonly meteredSeats: number
   /** Subscription seats participating. */
   readonly subscriptionSeats: number
+  /** Seats participating at no cost per token. */
+  readonly freeSeats: number
   /** Blended USD per output token across the metered seats. */
   readonly blendedRate?: number | undefined
   /** Effective USD per output token for one subscription seat. */
@@ -158,8 +172,14 @@ export function project(
 ): Projection {
   const caveats: string[] = []
   const active = seats.filter(seat => seat.enabled)
-  const metered = active.filter(seat => seat.transport === 'openrouter')
-  const subscriptionSeats = active.filter(seat => seat.transport === 'cli')
+  // A free seat is neither metered nor a subscription: it draws on no budget
+  // at all, so it belongs in neither total. `free` is tested before the
+  // transport because a free seat can be either kind — `free-claude` runs the
+  // CLI against a local proxy, so reading the transport alone would bill it to
+  // a subscription it never touches.
+  const freeSeats = active.filter(seat => seat.free === true)
+  const metered = active.filter(seat => seat.transport === 'openrouter' && seat.free !== true)
+  const subscriptionSeats = active.filter(seat => seat.transport === 'cli' && seat.free !== true)
 
   const rates: number[] = []
   for (const seat of metered) {
@@ -221,6 +241,7 @@ export function project(
   return {
     meteredSeats: metered.length,
     subscriptionSeats: subscriptionSeats.length,
+    freeSeats: freeSeats.length,
     blendedRate,
     subscriptionRate,
     monthlyOutlayUsd,

@@ -1,17 +1,27 @@
 /**
- * The council → swarm → council chain, as one resumable run.
+ * The council → propose → swarm → council chain, as one resumable run.
  *
- * Each of the three tools already works alone, and stringing them together by
- * asking the model to call them in order is what this replaces. That version
- * has no memory: nothing carries the agreed approach into the decomposition,
- * nothing carries the units' output into the review, and a model that forgets
- * stage two simply does not run it. Here the stage is durable state, so the
- * chain is a fact about the run rather than a hope about the model.
+ * Each of the tools already works alone, and stringing them together by asking
+ * the model to call them in order is what this replaces. That version has no
+ * memory: nothing carries the agreed approach into the decomposition, nothing
+ * carries the units' output into the review, and a model that forgets a stage
+ * simply does not run it. Here the stage is durable state, so the chain is a
+ * fact about the run rather than a hope about the model.
  *
  * One call advances ONE stage. That is deliberate: every stage spends, and a
  * call that could spend three times over is a call no gate can price. Between
  * stages the run sits in settings, which is also what makes it survivable —
  * see the hold below.
+ *
+ * **The stage list belongs to the run, not to this module.** A run that only
+ * has to decide something wants council → swarm → review; a run that has to
+ * BUILD something wants a proposing stage in the middle, where every seat
+ * writes its own version of the change into a tree of its own and the user
+ * picks between them before any work is split up. Hard-coding one order made
+ * the second kind impossible to express: a request that described its own
+ * stages in prose got the three-stage chain anyway, and the samples it asked
+ * for had nowhere to come from. So the order is data now, carried in the state
+ * and validated on the way in, and {@link PIPELINE_STAGES} is only the default.
  *
  * **A spent quota holds the run; it never fails it.** A seat that runs out of
  * subscription allowance has produced no work and lost none: the approved
@@ -26,11 +36,55 @@ import type { QuotaHold } from './quota-hold.ts'
 import type { SubTask } from './decompose.ts'
 import type { SwarmUnitResult } from './swarm.ts'
 
-/** The three stages, in the order they run. */
-export const PIPELINE_STAGES = ['council', 'swarm', 'review'] as const
+/** Every stage the chain knows how to run, in their natural order. */
+export const ALL_PIPELINE_STAGES = ['council', 'propose', 'swarm', 'review'] as const
 
 /** One stage of the chain. */
-export type PipelineStage = (typeof PIPELINE_STAGES)[number]
+export type PipelineStage = (typeof ALL_PIPELINE_STAGES)[number]
+
+/**
+ * The default order: decide, split, review.
+ *
+ * Kept as the default rather than the only order because it is what a run that
+ * answers a question wants, and because every run stored before the order
+ * became configurable is one of these.
+ */
+export const PIPELINE_STAGES = ['council', 'swarm', 'review'] as const satisfies readonly PipelineStage[]
+
+/**
+ * The order a build wants: decide, write competing versions, split, review.
+ *
+ * The proposing stage sits between the decision and the work because that is
+ * the only point where choosing is cheap. Once the swarm has split the job the
+ * choice has already been made implicitly by whoever wrote the graph.
+ */
+export const BUILD_PIPELINE_STAGES = ['council', 'propose', 'swarm', 'review'] as const satisfies readonly PipelineStage[]
+
+/**
+ * Read a stage list written as text, e.g. `council,propose,swarm,review`.
+ *
+ * Unknown names are dropped rather than rejected: a list that names one stage
+ * this build does not have should still run the stages it does, and a run is
+ * worse off stopped than shortened. An empty result falls back to the default,
+ * so a typo can never produce a chain with nothing in it.
+ * @param text - comma or space separated stage names, in order.
+ * @returns the stages, or the default when none survive.
+ */
+export function parseStages(text: string | undefined): readonly PipelineStage[] {
+  if (text === undefined || text.trim() === '') return PIPELINE_STAGES
+  const known = new Set<string>(ALL_PIPELINE_STAGES)
+  const seen = new Set<string>()
+  const out: PipelineStage[] = []
+  for (const raw of text.split(/[\s,]+/)) {
+    const name = raw.trim().toLowerCase()
+    // A stage repeated in one list would run twice and be indexed once, so the
+    // progress line and `nextStage` would disagree about where the run is.
+    if (!known.has(name) || seen.has(name)) continue
+    seen.add(name)
+    out.push(name as PipelineStage)
+  }
+  return out.length === 0 ? PIPELINE_STAGES : out
+}
 
 /** How a call ended. */
 export type PipelinePhase =
@@ -43,13 +97,30 @@ export type PipelinePhase =
   /** Cannot proceed for a reason waiting will not fix. */
   | 'blocked'
 
-/** What one finished stage left behind. */
+/** One stage of the chain that has finished. */
 export interface StageRecord {
   readonly stage: PipelineStage
   /** The stage's own report, as shown when it ran. */
   readonly text: string
   /** Epoch ms the stage finished. */
   readonly at: number
+}
+
+/**
+ * One seat's sandboxed version of the change, as the chain carries it.
+ *
+ * Only what a later stage or a person needs to find the tree again: the code
+ * itself stays on disk under the seat's own root, because a chain state that
+ * carried file bodies would put tens of thousands of characters into settings,
+ * which is read whole on every tool invocation.
+ */
+export interface PipelineCandidate {
+  /** Seat that wrote it. */
+  readonly seat: string
+  /** Absolute root the seat's files were written under. */
+  readonly root: string
+  /** How many files it wrote. */
+  readonly files: number
 }
 
 /**
@@ -64,10 +135,27 @@ export interface PipelineState {
   readonly query: string
   /** The stage the NEXT call will run. */
   readonly stage: PipelineStage
-  /** The approach the council agreed, carried into the decomposition. */
+  /**
+   * The order this run advances through. Absent means {@link PIPELINE_STAGES},
+   * which is what every run stored before the order was configurable has.
+   */
+  readonly stages?: readonly PipelineStage[] | undefined
+  /** The approach the council agreed, carried into every stage after it. */
   readonly plan?: string | undefined
+  /**
+   * Seat whose plan won the vote, carried into every stage after it.
+   *
+   * The approach alone says what to do; this says who worked it out. A later
+   * stage that has to pick a seat for a job — writing the decomposition, above
+   * all — should route on what the run earned rather than on a configured
+   * preference, and that is only possible if the winner survives the stage
+   * boundary the way the approach does.
+   */
+  readonly winner?: string | undefined
   /** The approved graph, stored verbatim so it is never re-planned. */
   readonly tasks?: readonly SubTask[] | undefined
+  /** Sandboxed versions the proposing stage wrote, carried into the swarm. */
+  readonly candidates?: readonly PipelineCandidate[] | undefined
   /** What the workers reported, carried into the review. */
   readonly units?: readonly SwarmUnitResult[] | undefined
   /** Finished stages, oldest first. */
@@ -81,8 +169,12 @@ export interface StageInput {
   readonly query: string
   /** The council's agreed approach; absent at stage one. */
   readonly plan?: string | undefined
+  /** The seat whose plan won; absent at stage one, or when no vote settled. */
+  readonly winner?: string | undefined
   /** The approved graph; present for the swarm stage once approved. */
   readonly tasks?: readonly SubTask[] | undefined
+  /** The sandboxed versions; present once a proposing stage has run. */
+  readonly candidates?: readonly PipelineCandidate[] | undefined
   /** What the workers reported; present at the review stage. */
   readonly units?: readonly SwarmUnitResult[] | undefined
 }
@@ -99,8 +191,12 @@ export interface StageOutput {
   readonly problems?: readonly string[] | undefined
   /** The approach, when the council stage produced one. */
   readonly plan?: string | undefined
+  /** The winning seat, when the council stage's vote settled on one. */
+  readonly winner?: string | undefined
   /** The graph, when the swarm stage produced or ran one. */
   readonly tasks?: readonly SubTask[] | undefined
+  /** The sandboxed versions, when the proposing stage wrote any. */
+  readonly candidates?: readonly PipelineCandidate[] | undefined
   /** Unit results, when the swarm stage ran. */
   readonly units?: readonly SwarmUnitResult[] | undefined
 }
@@ -128,18 +224,34 @@ export interface PipelineResult {
 }
 
 /**
+ * The order a run advances through, defaulted for runs stored before the order
+ * was data.
+ * @param state - the run.
+ * @returns its stage list.
+ */
+export function stagesOf(state: PipelineState): readonly PipelineStage[] {
+  const stages = state.stages
+  return stages === undefined || stages.length === 0 ? PIPELINE_STAGES : stages
+}
+
+/**
  * The stage after this one, or undefined at the end of the chain.
  * @param stage - the stage that just finished.
+ * @param stages - the order this run advances through.
  * @returns the next stage.
  */
-export function nextStage(stage: PipelineStage): PipelineStage | undefined {
-  const at = PIPELINE_STAGES.indexOf(stage)
-  return at < 0 ? undefined : PIPELINE_STAGES[at + 1]
+export function nextStage(
+  stage: PipelineStage,
+  stages: readonly PipelineStage[] = PIPELINE_STAGES,
+): PipelineStage | undefined {
+  const at = stages.indexOf(stage)
+  return at < 0 ? undefined : stages[at + 1]
 }
 
 /** How each stage reads in a report. */
 const STAGE_TITLE: Record<PipelineStage, string> = {
   council: 'Council — agree the approach',
+  propose: 'Propose — every seat writes its own version, in its own tree',
   swarm: 'Swarm — split and run the work',
   review: 'Council — review what came back',
 }
@@ -148,20 +260,31 @@ const STAGE_TITLE: Record<PipelineStage, string> = {
  * Start a run. Nothing has been spent at this point.
  * @param id - the run's id, used by the gate controls.
  * @param query - the user's request, in their own words.
+ * @param stages - the order to advance through; defaults to the three-stage chain.
  * @returns the state a first call will advance.
  */
-export function startPipeline(id: string, query: string): PipelineState {
-  return { id, query, stage: 'council' }
+export function startPipeline(
+  id: string,
+  query: string,
+  stages: readonly PipelineStage[] = PIPELINE_STAGES,
+): PipelineState {
+  const order = stages.length === 0 ? PIPELINE_STAGES : stages
+  // The first stage is whatever the order starts with, not a fixed 'council':
+  // a run told to start at the proposing stage has had its decision made
+  // somewhere else already, and charging it for a council round to get there
+  // would be charging for an answer it already has.
+  return { id, query, stage: order[0] ?? 'council', stages: order }
 }
 
 /**
  * The progress line every report carries, so the user can see where they are.
  * @param state - the run.
- * @returns e.g. "Stage 2 of 3 · swarm".
+ * @returns e.g. "Stage 2 of 4 · Propose — every seat writes its own version".
  */
 function progress(state: PipelineState): string {
-  const at = PIPELINE_STAGES.indexOf(state.stage)
-  return `Stage ${String(at + 1)} of ${String(PIPELINE_STAGES.length)} · ${STAGE_TITLE[state.stage]}`
+  const stages = stagesOf(state)
+  const at = stages.indexOf(state.stage)
+  return `Stage ${String(at + 1)} of ${String(stages.length)} · ${STAGE_TITLE[state.stage]}`
 }
 
 /**
@@ -208,6 +331,7 @@ function heldReport(state: PipelineState, now: number): string {
 export async function runPipeline(options: PipelineOptions): Promise<PipelineResult> {
   const now = options.now ?? Date.now()
   const state = options.state
+  const stages = stagesOf(state)
 
   // Still parked: do not call a seat at all. The whole point of the hold is
   // that a spent allowance costs nothing further until it resets.
@@ -225,7 +349,9 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
   const output = await options.runStage(resumed.stage, {
     query: resumed.query,
     ...(resumed.plan === undefined ? {} : { plan: resumed.plan }),
+    ...(resumed.winner === undefined ? {} : { winner: resumed.winner }),
     ...(resumed.tasks === undefined ? {} : { tasks: resumed.tasks }),
+    ...(resumed.candidates === undefined ? {} : { candidates: resumed.candidates }),
     ...(resumed.units === undefined ? {} : { units: resumed.units }),
   })
 
@@ -235,9 +361,11 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
     const held: PipelineState = {
       ...resumed,
       // Whatever the stage did manage to produce is kept, so a resumed run
-      // does not redo the units that already reported.
+      // does not redo the units — or the candidates — that already landed.
       ...(output.plan === undefined ? {} : { plan: output.plan }),
+      ...(output.winner === undefined ? {} : { winner: output.winner }),
       ...(output.tasks === undefined ? {} : { tasks: output.tasks }),
+      ...(output.candidates === undefined ? {} : { candidates: output.candidates }),
       ...(output.units === undefined ? {} : { units: output.units }),
       hold,
     }
@@ -264,6 +392,7 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
     const waiting: PipelineState = {
       ...resumed,
       ...(output.plan === undefined ? {} : { plan: output.plan }),
+      ...(output.winner === undefined ? {} : { winner: output.winner }),
       ...(output.tasks === undefined ? {} : { tasks: output.tasks }),
     }
     return {
@@ -277,13 +406,15 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
     ...(resumed.records ?? []),
     { stage: resumed.stage, text: output.report, at: now },
   ]
-  const after = nextStage(resumed.stage)
+  const after = nextStage(resumed.stage, stages)
   const advanced: PipelineState = {
     ...resumed,
     stage: after ?? resumed.stage,
     records,
     ...(output.plan === undefined ? {} : { plan: output.plan }),
+    ...(output.winner === undefined ? {} : { winner: output.winner }),
     ...(output.tasks === undefined ? {} : { tasks: output.tasks }),
+    ...(output.candidates === undefined ? {} : { candidates: output.candidates }),
     ...(output.units === undefined ? {} : { units: output.units }),
   }
 
@@ -295,16 +426,30 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
     }
   }
 
+  // A proposing stage that just finished has left the user something to read
+  // and choose between, and the next stage builds whatever they choose. Saying
+  // so here is the difference between a chain that pauses for a decision and
+  // one that looks like it stalled.
+  const handover = resumed.stage === 'propose'
+    ? [
+      `**Next:** ${STAGE_TITLE[after]}, built from the version you pick.`,
+      'Read the candidates above, say which one — or which parts of which — you want,',
+      'then approve. Nothing is built until you have said.',
+    ]
+    : [
+      `**Next:** ${STAGE_TITLE[after]}. Approve it to spend, or stop here — the run keeps.`,
+    ]
+
   return {
     phase: 'staged',
     state: advanced,
     report: [
-      `${progress(advanced)}`,
+      progress(advanced),
       '',
       output.report,
       '',
       '---',
-      `**Next:** ${STAGE_TITLE[after]}. Approve it to spend, or stop here — the run keeps.`,
+      ...handover,
     ].join('\n'),
   }
 }

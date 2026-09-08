@@ -3,10 +3,11 @@
  *
  * Two things decide an assignment, and they are not equally weighted. The
  * first is fit: a worker declared for `code` should get the code. The second,
- * and the reason this module exists at all, is cost — a subscription worker is
- * already paid for, so work handed to it is free at the margin while the same
- * work on a metered provider is not. Any tie therefore breaks toward the
- * subscription.
+ * and the reason this module exists at all, is cost — and cost has three
+ * tiers, not two. A free worker spends nothing at all; a subscription worker
+ * bills nothing but draws down a finite monthly quota; a metered worker bills
+ * per token. Any tie therefore breaks toward the cheapest scarce resource,
+ * which means free first and the subscription held in reserve.
  *
  * The user owns the roster. This module never invents a worker or silently
  * promotes a disabled one; if nothing is eligible it says so rather than
@@ -63,8 +64,15 @@ export interface AssignmentPlan {
   readonly load: ReadonlyMap<string, number>
 }
 
-/** Cost classes in preference order: free at the margin comes first. */
-const COST_ORDER: Record<CostClass, number> = { included: 0, metered: 1 }
+/**
+ * Cost classes in preference order: the cheapest scarce resource comes first.
+ *
+ * A free seat outranks a subscription seat because the subscription's quota is
+ * finite and a monthly budget is what runs out first. While both sorted as
+ * `included` this order did not exist, so the tie fell through to
+ * `localeCompare` and `claude` beat `free-claude` on its first letter.
+ */
+const COST_ORDER: Record<CostClass, number> = { free: 0, included: 1, metered: 2 }
 
 /**
  * Guess the kind of work a unit is, from its own words.
@@ -96,22 +104,44 @@ function accepts(worker: Worker, kind: WorkKind): boolean {
 }
 
 /**
+ * A preference for one unit kind, earned by this run rather than configured.
+ *
+ * Kept separate from `Worker.kinds`: the roster's kinds are a user or
+ * default setting that outlasts the run, while an earned preference is
+ * evidence from THIS run — a plan vote, a code sample the user picked — and
+ * applies only to it. Neither is an opinion this module holds about which
+ * model is better at what.
+ */
+export interface EarnedPreference {
+  /** Skip cost entirely when ranking candidates; fit and load decide alone. */
+  readonly ignoreCost?: boolean | undefined
+  /** Kind to the provider that earned first refusal on it this run. */
+  readonly specialists?: ReadonlyMap<WorkKind, string> | undefined
+}
+
+/**
  * Assign every unit of a decomposition to a worker.
  *
  * Order of preference, strongest first:
  *  1. A provider the decomposition named explicitly, if that worker is enabled.
- *  2. A worker declaring this kind of work, cheapest cost class first.
- *  3. Any enabled worker accepting `any`, cheapest cost class first.
+ *  2. The provider that earned this kind this run (`earned.specialists`), if
+ *     it accepts the kind and has room.
+ *  3. A worker declaring this kind of work, cheapest cost class first unless
+ *     `earned.ignoreCost` is set.
+ *  4. Any enabled worker accepting `any`, ranked the same way.
  *
- * Within a cost class, the least-loaded worker wins, so one subscription is
- * not drained while another sits idle.
+ * Within a cost class (or, with cost ignored, across the whole tier), the
+ * least-loaded worker wins, so one subscription is not drained while another
+ * sits idle.
  * @param tasks - the decomposition.
  * @param roster - configured workers.
+ * @param earned - this run's own signals for preferring a worker, if any.
  * @returns the assignment plan.
  */
 export function assignWorkers(
   tasks: readonly SubTask[],
   roster: readonly Worker[],
+  earned?: EarnedPreference,
 ): AssignmentPlan {
   const enabled = roster.filter(worker => worker.enabled)
   const load = new Map<string, number>()
@@ -122,10 +152,10 @@ export function assignWorkers(
   const hasRoom = (worker: Worker): boolean =>
     worker.maxConcurrent === undefined || held(worker) < worker.maxConcurrent
 
-  /** Cheapest cost class first, then least loaded, then stable by name. */
+  /** Cheapest cost class first unless told to skip it, then least loaded, then stable by name. */
   const best = (candidates: readonly Worker[]): Worker | undefined =>
     [...candidates].sort((a, b) =>
-      COST_ORDER[a.costClass] - COST_ORDER[b.costClass]
+      (earned?.ignoreCost === true ? 0 : COST_ORDER[a.costClass] - COST_ORDER[b.costClass])
       || held(a) - held(b)
       || a.provider.localeCompare(b.provider),
     )[0]
@@ -138,10 +168,14 @@ export function assignWorkers(
     const named = task.provider === undefined
       ? undefined
       : enabled.find(worker => worker.provider === task.provider && hasRoom(worker))
+    const specialist = named !== undefined ? undefined : earned?.specialists?.get(kind)
+    const earnedWorker = specialist === undefined
+      ? undefined
+      : enabled.find(worker => worker.provider === specialist && accepts(worker, kind) && hasRoom(worker))
     const matching = enabled.filter(worker => accepts(worker, kind) && hasRoom(worker))
     const anyone = enabled.filter(worker => accepts(worker, 'any') && hasRoom(worker))
 
-    const chosen = named ?? best(matching) ?? best(anyone)
+    const chosen = named ?? earnedWorker ?? best(matching) ?? best(anyone)
     if (chosen === undefined) {
       unassigned.push(task.id)
       assignments.push({ task, reason: 'no enabled worker could take it' })
@@ -151,9 +185,15 @@ export function assignWorkers(
     load.set(chosen.provider, held(chosen) + 1)
     const reason = named !== undefined
       ? 'named by the decomposition'
-      : chosen.costClass === 'included'
-        ? `${kind} on a subscription worker`
-        : `${kind}; no subscription worker was free`
+      : chosen === earnedWorker
+        ? `${kind}; earned this run`
+        : earned?.ignoreCost === true
+          ? `${kind}; least-loaded paid worker`
+          : chosen.costClass === 'free'
+            ? `${kind} on a free worker`
+            : chosen.costClass === 'included'
+              ? `${kind}; no free worker was available`
+              : `${kind}; no free or subscription worker was available`
     assignments.push({ task, provider: chosen.provider, reason })
   }
 
@@ -191,10 +231,10 @@ export function defaultRoster(available: readonly string[]): readonly Worker[] {
       // Off on a fresh install: it needs the local proxy running, and a worker
       // that fails every unit is worse than one the user switches on.
       enabled: false,
-      // `included` because nothing is billed per token for it. It sorts behind
-      // `claude-code` on a tie only because the names order that way, not
-      // because the subscription is cheaper.
-      costClass: 'included',
+      // Not `included`: the proxy bills nothing AND spends no subscription
+      // quota, so it outranks the subscription workers rather than tying with
+      // them and losing the tie to `claude-code` on alphabetical order.
+      costClass: 'free',
       kinds: ['code', 'tests', 'docs', 'research', 'review', 'any'],
     },
     {
@@ -219,8 +259,10 @@ export function defaultRoster(available: readonly string[]): readonly Worker[] {
  * on the council — wanting a model to debate is not the same as wanting it to
  * carry a unit.
  *
- * A CLI seat bills a subscription already paid for, so it counts as `included`
- * and wins ties; an OpenRouter seat is metered and picks up what is left.
+ * A seat declaring itself free counts as `free` and wins ties outright; a CLI
+ * seat bills a subscription already paid for, so it counts as `included` and
+ * is held in reserve behind the free seats; an OpenRouter seat is metered and
+ * picks up what is left.
  * @param seats - every configured seat, shipped and user-added.
  * @param overrides - per-seat swarm state, keyed by seat id.
  * @returns the roster, in seat order.
@@ -240,7 +282,11 @@ export function seatRoster(
       // Absent an override a seat joins the swarm the way it joined the
       // council, so a fresh install needs no second setup pass.
       enabled: override?.enabled ?? seat.enabled,
-      costClass: seat.transport === 'cli' ? 'included' : 'metered',
+      // A seat that declares itself free spends neither money nor a
+      // subscription's quota, so it outranks a CLI seat rather than tying with
+      // it. A CLI seat costs no money but does spend the subscription behind
+      // it, and that quota is the thing a monthly budget runs out of.
+      costClass: seat.free === true ? 'free' : seat.transport === 'cli' ? 'included' : 'metered',
       kinds,
     }
   })

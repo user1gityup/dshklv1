@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { detectQuotaHold, holdElapsed, holdRemaining, isQuotaExhausted, DEFAULT_HOLD_MS } from '../src/quota-hold.ts'
-import { nextStage, runPipeline, startPipeline } from '../src/pipeline.ts'
+import { BUILD_PIPELINE_STAGES, nextStage, parseStages, runPipeline, stagesOf, startPipeline } from '../src/pipeline.ts'
 import type { PipelineState, StageOutput } from '../src/pipeline.ts'
 
 /** A fixed clock, so a stated reset time resolves the same way every run. */
@@ -106,6 +106,49 @@ describe('nextStage', () => {
   })
 })
 
+describe('parseStages', () => {
+  it('reads an order written as text', () => {
+    expect(parseStages('council,propose,swarm,review')).toEqual(['council', 'propose', 'swarm', 'review'])
+    expect(parseStages('council propose')).toEqual(['council', 'propose'])
+  })
+
+  it('drops a name this build does not have rather than refusing the run', () => {
+    // A shortened chain still does useful work; a rejected one does none.
+    expect(parseStages('council,deploy,review')).toEqual(['council', 'review'])
+  })
+
+  it('drops a repeat, so the progress line and nextStage cannot disagree', () => {
+    expect(parseStages('council,council,review')).toEqual(['council', 'review'])
+  })
+
+  it('falls back to the default rather than producing an empty chain', () => {
+    expect(parseStages('')).toEqual(['council', 'swarm', 'review'])
+    expect(parseStages(undefined)).toEqual(['council', 'swarm', 'review'])
+    expect(parseStages('nonsense')).toEqual(['council', 'swarm', 'review'])
+  })
+})
+
+describe('stagesOf', () => {
+  it('defaults a run stored before the order was data', () => {
+    // Every run written by the three-stage build has no `stages` field.
+    expect(stagesOf({ id: 'p', query: 'q', stage: 'swarm' })).toEqual(['council', 'swarm', 'review'])
+  })
+
+  it('keeps the order a run was started with', () => {
+    expect(stagesOf(startPipeline('p', 'q', BUILD_PIPELINE_STAGES))).toEqual([
+      'council', 'propose', 'swarm', 'review',
+    ])
+  })
+})
+
+describe('nextStage over a build order', () => {
+  it('puts the proposing stage between the decision and the work', () => {
+    expect(nextStage('council', BUILD_PIPELINE_STAGES)).toBe('propose')
+    expect(nextStage('propose', BUILD_PIPELINE_STAGES)).toBe('swarm')
+    expect(nextStage('review', BUILD_PIPELINE_STAGES)).toBeUndefined()
+  })
+})
+
 describe('runPipeline', () => {
   it('advances one stage per call, and one only', async () => {
     const stage = runner({})
@@ -120,6 +163,24 @@ describe('runPipeline', () => {
     const after = await runPipeline({ state: startPipeline('p1', 'q'), runStage: stage.runStage, now: NOW })
     await runPipeline({ state: after.state, runStage: stage.runStage, now: NOW })
     expect(stage.seen[1]?.input).toMatchObject({ plan: 'use the cache' })
+  })
+
+  it('carries the winning seat into the decomposition alongside the approach', async () => {
+    // The approach says what to do; the winner says who worked it out. Routing
+    // earned by the run is only possible if the second survives the stage
+    // boundary the way the first does.
+    const stage = runner({ council: { report: 'agreed', complete: true, plan: 'use the cache', winner: 'claude' } })
+    const after = await runPipeline({ state: startPipeline('p1', 'q'), runStage: stage.runStage, now: NOW })
+    expect(after.state.winner).toBe('claude')
+    await runPipeline({ state: after.state, runStage: stage.runStage, now: NOW })
+    expect(stage.seen[1]?.input).toMatchObject({ winner: 'claude' })
+  })
+
+  it('keeps the winner while a stage waits at its own gate', async () => {
+    const stage = runner({ council: { report: 'waiting', complete: false, plan: 'p', winner: 'claude' } })
+    const out = await runPipeline({ state: startPipeline('p1', 'q'), runStage: stage.runStage, now: NOW })
+    expect(out.state.stage).toBe('council')
+    expect(out.state.winner).toBe('claude')
   })
 
   it('stops where a stage stopped at its own gate, without advancing', async () => {
@@ -194,6 +255,93 @@ describe('runPipeline', () => {
     expect(out.state.hold).toBeUndefined()
     // The approved graph survived the hold: resuming costs no new planning call.
     expect(stage.seen[0]?.input).toMatchObject({ tasks: [{ id: 'a' }] })
+  })
+
+  it('starts a build run at the first stage of its own order, not a fixed one', async () => {
+    const state = startPipeline('p1', 'build the window', ['propose', 'swarm'])
+    expect(state.stage).toBe('propose')
+    const stage = runner({})
+    const out = await runPipeline({ state, runStage: stage.runStage, now: NOW })
+    expect(stage.seen[0]?.stage).toBe('propose')
+    expect(out.state.stage).toBe('swarm')
+  })
+
+  it('runs all four stages of a build order, in order', async () => {
+    const stage = runner({})
+    let state = startPipeline('p1', 'build the window', BUILD_PIPELINE_STAGES)
+    const phases: string[] = []
+    for (let call = 0; call < 4; call += 1) {
+      const out = await runPipeline({ state, runStage: stage.runStage, now: NOW })
+      phases.push(out.phase)
+      state = out.state
+    }
+    expect(stage.seen.map(one => one.stage)).toEqual(['council', 'propose', 'swarm', 'review'])
+    expect(phases).toEqual(['staged', 'staged', 'staged', 'done'])
+  })
+
+  it('counts the stages the run actually has, not a constant three', async () => {
+    const stage = runner({})
+    const out = await runPipeline({
+      state: startPipeline('p1', 'q', BUILD_PIPELINE_STAGES),
+      runStage: stage.runStage,
+      now: NOW,
+    })
+    expect(out.report).toContain('Stage 2 of 4')
+  })
+
+  it('carries the seat trees from the proposing stage into the swarm', async () => {
+    // Without this the workers would start from scratch beside three finished
+    // candidates nobody told them about.
+    const stage = runner({
+      propose: {
+        report: 'three versions written',
+        complete: true,
+        candidates: [
+          { seat: 'claude', root: '/w/claude', files: 4 },
+          { seat: 'kimi', root: '/w/kimi', files: 3 },
+        ],
+      },
+    })
+    let state = startPipeline('p1', 'q', ['propose', 'swarm'])
+    const first = await runPipeline({ state, runStage: stage.runStage, now: NOW })
+    state = first.state
+    expect(state.candidates).toHaveLength(2)
+    await runPipeline({ state, runStage: stage.runStage, now: NOW })
+    expect(stage.seen[1]?.input).toMatchObject({ candidates: [{ seat: 'claude', files: 4 }, { seat: 'kimi' }] })
+  })
+
+  it('asks for a pick after the proposing stage instead of offering to spend', async () => {
+    const stage = runner({ propose: { report: 'three versions written', complete: true } })
+    const out = await runPipeline({
+      state: startPipeline('p1', 'q', ['propose', 'swarm', 'review']),
+      runStage: stage.runStage,
+      now: NOW,
+    })
+    expect(out.report).toContain('built from the version you pick')
+    expect(out.report).not.toContain('Approve it to spend')
+  })
+
+  it('keeps the candidates when a spent allowance parks the run', async () => {
+    const stage = runner({
+      propose: {
+        report: 'two of three wrote',
+        complete: false,
+        candidates: [{ seat: 'claude', root: '/w/claude', files: 4 }],
+        failures: [{ seat: 'kimi', error: 'usage limit reached' }],
+      },
+    })
+    const out = await runPipeline({
+      state: startPipeline('p1', 'q', BUILD_PIPELINE_STAGES),
+      runStage: async (s, i) => (s === 'council'
+        ? { report: 'agreed', complete: true }
+        : await stage.runStage(s, i)),
+      now: NOW,
+    })
+    // The council stage passed; the proposing stage is where the seat runs out.
+    expect(out.phase).toBe('staged')
+    const held = await runPipeline({ state: out.state, runStage: stage.runStage, now: NOW })
+    expect(held.phase).toBe('held')
+    expect(held.state.candidates).toEqual([{ seat: 'claude', root: '/w/claude', files: 4 }])
   })
 
   it('blocks on a problem waiting cannot fix', async () => {

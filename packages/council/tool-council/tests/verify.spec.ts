@@ -59,6 +59,27 @@ describe('auditDraft', () => {
     expect(audit.penalty).toBeGreaterThan(0)
   })
 
+  it('does not penalise a seat for citing a local address', async () => {
+    // The question named http://localhost:3080; a web fetch cannot speak for
+    // the reader's own machine either way, so this must cost nothing.
+    const audit = await auditDraft('kimi', 'the app at http://localhost:3080', [], seam({}))
+    expect(audit.citations[0]?.status).toBe('unchecked')
+    expect(audit.penalty).toBe(0)
+  })
+
+  it('does not penalise a citation when the seam itself has no provider', async () => {
+    const broken: FetchSeam = {
+      async fetch() {
+        const error = new Error('no usable web provider is registered')
+        Object.assign(error, { code: 'WEB_PROVIDER_UNAVAILABLE' })
+        throw error
+      },
+    }
+    const audit = await auditDraft('kimi', 'https://real.example/p', [], broken)
+    expect(audit.citations[0]?.status).toBe('unchecked')
+    expect(audit.penalty).toBe(0)
+  })
+
   it('accepts a citation that resolves', async () => {
     const audit = await auditDraft('kimi', 'https://real.example/p', [], seam({ 'https://real.example/p': 200 }))
     expect(audit.citations[0]?.status).toBe('reachable')
@@ -208,9 +229,21 @@ describe('a slow seat gets its own timeout', () => {
     expect(free?.timeoutMs).toBeGreaterThan(180_000)
   })
 
-  it('leaves the paid seats on the run default', () => {
-    for (const id of ['claude', 'kimi', 'deepseek']) {
-      expect(DEFAULT_SEATS.find(seat => seat.id === id)?.timeoutMs).toBeUndefined()
+  it('gives the claude seat room to finish a researched round', () => {
+    // Measured: killed at the run's 180s default with no output, on a draft
+    // prompt carrying 30 shared sources.
+    const claude = DEFAULT_SEATS.find(seat => seat.id === 'claude')
+    expect(claude?.timeoutMs).toBeGreaterThan(180_000)
+  })
+
+  it('gives the hosted seats room to finish a drafting round too', () => {
+    // They used to sit on the run's 180s default, on the reasoning that an
+    // HTTP seat has no retry-through-529 behaviour to wait out. Measured
+    // 2026-09-07: both were cut off mid-draft while the CLI seats, which carry
+    // their own caps, finished the same round in 117-166s. Generation length,
+    // not retry behaviour, is what the cap has to cover.
+    for (const id of ['kimi', 'deepseek']) {
+      expect(DEFAULT_SEATS.find(seat => seat.id === id)?.timeoutMs).toBeGreaterThan(180_000)
     }
   })
 })

@@ -253,9 +253,11 @@ export function CouncilBudget({ wide, t, sessions, settings }: CouncilBudgetProp
                 <input type="checkbox" checked={seat.enabled} onChange={() => { toggleSeat(seat) }} />
                 <span className={css.rowName}>{seat.name}</span>
                 <span className={css.rowMeta}>
-                  {seat.transport === 'openrouter'
-                    ? t('seats.metered')
-                    : projection.subscriptionRate === undefined ? t('seats.subscription') : t('seats.subPriced')}
+                  {seat.free === true
+                    ? t('seats.free')
+                    : seat.transport === 'openrouter'
+                      ? t('seats.metered')
+                      : projection.subscriptionRate === undefined ? t('seats.subscription') : t('seats.subPriced')}
                 </span>
                 {isExtra(seat.id) ? (
                   <button
