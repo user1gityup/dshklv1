@@ -6,3 +6,10 @@ dist/
 .env.*
 *.log
 .DS_Store
+
+# Launcher configuration: names directories on one machine.
+scripts/dsh-env.cmd
+
+# Proxy virtualenvs.
+.venv/
+__pycache__/
