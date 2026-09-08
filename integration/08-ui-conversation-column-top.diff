@@ -1,0 +1,94 @@
+diff --git a/packages/client/ui-conversation/src/client/apply.ts b/packages/client/ui-conversation/src/client/apply.ts
+index 7920104d68..51dd1717b3 100644
+--- a/packages/client/ui-conversation/src/client/apply.ts
++++ b/packages/client/ui-conversation/src/client/apply.ts
+@@ -202,6 +202,7 @@ export function apply(ctx: Context): void {
+       'conversation.composer': { kind: 'chain', scope: 'session' },
+       'conversation.composer.bar': { kind: 'single', scope: 'session-maybe' },
+       'conversation.input.overlay': { kind: 'list', scope: 'session' },
++      'conversation.column.top': { kind: 'list', scope: 'session' },
+       'conversation.input.dock': { kind: 'list', scope: 'session' },
+       'conversation.composer.dock': { kind: 'list', scope: 'session' },
+       'conversation.input.left': { kind: 'list', scope: 'session' },
+diff --git a/packages/client/ui-conversation/src/client/contract/slots.ts b/packages/client/ui-conversation/src/client/contract/slots.ts
+index 307ac38482..eea1ac4cde 100644
+--- a/packages/client/ui-conversation/src/client/contract/slots.ts
++++ b/packages/client/ui-conversation/src/client/contract/slots.ts
+@@ -192,6 +192,17 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
+     // this package, while this package's input contract already imports
+     // ui-input-trigger, so the type arrives transitively). The runtime declaration
+     // (children table in apply.ts) stays here with the other input slots.
++    /**
++     * A pinned full-width band at the very top of the conversation column,
++     * between the session header and the scrollport — the seat for a control
++     * that must stay in one place no matter how far the transcript has
++     * scrolled (the pipeline control lives here). It is OUTSIDE the scroll
++     * body by construction, so nothing here moves as messages arrive and the
++     * hero collapses; anything that should travel with the composer belongs
++     * in `conversation.input.dock` instead. No owner share: the band is
++     * chrome, not part of the input, so entries take only what they inject.
++     */
++    'conversation.column.top': { kind: 'list'; scope: 'session' }
+     /**
+      * A full-width row of its own, stacked above the composer card — the seat
+      * for anything that needs a line to itself (queue rows, a todo strip, a
+@@ -641,6 +652,7 @@ export type ConversationSlotProps =
+     | 'conversation.session' | 'conversation.session.header'
+     | 'conversation.composer' | 'conversation.composer.bar'
+     | 'conversation.input.overlay'
++    | 'conversation.column.top'
+     | 'conversation.input.dock' | 'conversation.composer.dock'
+     | 'conversation.input.left' | 'conversation.input.right'
+     | 'conversation.hero.brand.mark'
+diff --git a/packages/client/ui-conversation/src/client/skeleton/ConversationRoot.module.css b/packages/client/ui-conversation/src/client/skeleton/ConversationRoot.module.css
+index 265a0bd802..589815f62f 100644
+--- a/packages/client/ui-conversation/src/client/skeleton/ConversationRoot.module.css
++++ b/packages/client/ui-conversation/src/client/skeleton/ConversationRoot.module.css
+@@ -227,6 +227,30 @@
+   flex: none;
+ }
+ 
++/* The pinned top band: column chrome, never part of the scrollport, so its
++   occupants hold one position through hero, settling and active alike. Width
++   follows the shared content axis so a pinned card lines up with the composer
++   card below it rather than spanning the raw column. `flex: none` is what
++   keeps the transcript's growth off it; `:empty` keeps an unregistered band
++   from reserving the gap. */
++.columnTop {
++  display: flex;
++  flex: none;
++  flex-direction: column;
++  gap: 6px;
++  align-self: center;
++  width: min(calc(var(--dsh-composer-card-max-width) + 2 * var(--dsh-composer-side-clearance)), 100%);
++  padding: 8px var(--dsh-composer-side-clearance) 0;
++  box-sizing: border-box;
++  /* Over the transcript's sticky code-block banners (z-index 6) and level
++     with the composer seat, so nothing scrolling past paints on top of it. */
++  z-index: 7;
++}
++
++.columnTop:empty {
++  display: none;
++}
++
+ .scrollBody {
+   display: flex;
+   flex: 1;
+diff --git a/packages/client/ui-conversation/src/client/skeleton/ConversationRoot.tsx b/packages/client/ui-conversation/src/client/skeleton/ConversationRoot.tsx
+index 07655d7dba..f5ffed50a3 100644
+--- a/packages/client/ui-conversation/src/client/skeleton/ConversationRoot.tsx
++++ b/packages/client/ui-conversation/src/client/skeleton/ConversationRoot.tsx
+@@ -186,6 +186,12 @@ export function ConversationRoot({
+   return (
+     <div className={css.root} data-phase={phase}>
+       {renderSlot('conversation.session.header', {})}
++      {/* Pinned band. It sits OUTSIDE .scrollBody on purpose: an entry docked
++          above the composer rides the hero to the middle of a blank column and
++          then down to the floor as the transcript grows, which is exactly the
++          movement this band exists to remove. `:empty` collapses it when no
++          plugin has registered, so an unused band costs no strip of column. */}
++      <div className={css.columnTop}>{renderSlot('conversation.column.top', {})}</div>
+       <div className={css.scrollBody} data-conversation-scroll="">
+         {renderSlot('conversation.session', {})}
+         {composerSeat}
