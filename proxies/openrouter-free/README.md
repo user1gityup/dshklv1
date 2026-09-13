@@ -19,6 +19,13 @@ often, and a pinned free model is a seat that fails the day it is retired.
 - Round-robins across the pool, falling through to the next model when one
   refuses capacity. Free-tier capacity belongs to the provider, not to you, so
   a single free model is a coin flip and a pool is not.
+- Lets a request pin one free model instead: any `model` other than
+  `proxy-auto` (or `auto`, or empty) is sent to that model only, retried on
+  capacity refusals but never swapped for another. The id must be in the free
+  pool; anything else — a paid model included — is refused with HTTP 400, so the
+  proxy's real key never pays for a request.
+- `GET /v1/models` lists `proxy-auto` first, then every pooled model with its
+  name and context length, so a model picker can offer both.
 
 ## Requirements
 
@@ -88,9 +95,16 @@ llm-pi-ai:
         - id: proxy-auto
           name: Free (auto-routed free models)
           contextWindow: 65536
+        # One entry per free model to pick directly; the ids are the ones
+        # GET /v1/models returns. DSH's model settings can discover them.
+        - id: nvidia/nemotron-3.5-lightning:free
+          name: "NVIDIA: Nemotron 3.5 Lightning (free)"
+          contextWindow: 1000000
 ```
 
 The seat and the provider are independent; you can have either without the other.
+The council budget panel can also pin the seat to one free model; the choice is
+stored as `council.seats.openrouter-free.model`.
 
 ## Running it with DSH
 

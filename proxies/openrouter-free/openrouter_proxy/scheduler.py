@@ -8,11 +8,15 @@ from typing import AsyncIterator, Optional
 
 import httpx
 
+from .discovery import FreeModel
 from .pool import WarmPool
 
 logger = logging.getLogger(__name__)
 
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+# Model ids that mean "let the pool choose". Anything else names one model.
+AUTO_MODEL_IDS = frozenset({"", "proxy-auto", "auto"})
 
 
 class RetryableError(Exception):
@@ -21,6 +25,10 @@ class RetryableError(Exception):
 
 class FatalError(Exception):
     """Permanent — skip this model entirely."""
+
+
+class UnknownModelError(ValueError):
+    """The request pinned a model that is not in the free pool."""
 
 
 class Scheduler:
@@ -32,6 +40,32 @@ class Scheduler:
         self.pool = pool
         self.api_key = api_key
 
+    def pinned_model(self, body: dict[str, object]) -> Optional[FreeModel]:
+        """The one model a request names, or None when the pool should choose.
+
+        A pinned request is held to the discovered free list. The upstream key
+        is a real OpenRouter key, so passing an arbitrary id through would let
+        a caller spend on a paid model through a proxy that exists to be free.
+        """
+        requested = body.get("model")
+        if not isinstance(requested, str) or requested.strip() in AUTO_MODEL_IDS:
+            return None
+        model = self.pool.find(requested.strip())
+        if model is None:
+            raise UnknownModelError(
+                f"'{requested}' is not a free chat model in the pool; "
+                "use 'proxy-auto' or an id from GET /v1/models"
+            )
+        return model
+
+    async def _next(
+        self, pinned: Optional[FreeModel], tried: list[str]
+    ) -> FreeModel:
+        """A pinned request retries its own model; an auto one rotates."""
+        if pinned is not None:
+            return pinned
+        return await self.pool.get_model(exclude=tried)
+
     async def execute(
         self,
         body: dict[str, object],
@@ -40,9 +74,10 @@ class Scheduler:
         """Execute a chat-completion request, retrying on transient errors."""
         tried: list[str] = []
         last: Optional[Exception] = None
+        pinned = self.pinned_model(body)
 
         for attempt in range(self.MAX_RETRIES):
-            model = await self.pool.get_model(exclude=tried)
+            model = await self._next(pinned, tried)
             tried.append(model.id)
 
             req = {**body, "model": model.id}
@@ -62,6 +97,9 @@ class Scheduler:
                 logger.error("Fatal error on %s: %s", model.id, exc)
                 self.pool.mark_error(model.id, retryable=False)
                 last = exc
+                # A pinned model has no next model to fall to.
+                if pinned is not None:
+                    break
                 # don't sleep — immediately try next
 
         raise RuntimeError(
@@ -82,9 +120,10 @@ class Scheduler:
         """
         tried: list[str] = []
         last: Optional[Exception] = None
+        pinned = self.pinned_model(body)
 
         for attempt in range(self.MAX_RETRIES):
-            model = await self.pool.get_model(exclude=tried)
+            model = await self._next(pinned, tried)
             tried.append(model.id)
             req = {**body, "model": model.id, "stream": True}
 
@@ -110,6 +149,8 @@ class Scheduler:
                 last = exc
                 if emitted:
                     raise RuntimeError(f"Stream broke mid-answer on {model.id}: {exc}") from exc
+                if pinned is not None:
+                    break
 
         raise RuntimeError(
             f"Exhausted {self.MAX_RETRIES} retries; last error: {last}"

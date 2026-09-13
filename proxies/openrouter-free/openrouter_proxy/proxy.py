@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from .discovery import Discovery
 from .pool import WarmPool
-from .scheduler import Scheduler
+from .scheduler import Scheduler, UnknownModelError
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,13 @@ def create_app(api_key: str | None = None, dsh_path: str | None = None) -> FastA
 
         want_stream = body.get("stream", False)
 
+        # Checked before the stream opens: once a 200 is sent, a bad model id
+        # could only surface as an error event inside the body.
+        try:
+            _scheduler.pinned_model(body)
+        except UnknownModelError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
         try:
             if want_stream:
                 return StreamingResponse(
@@ -116,15 +123,27 @@ def create_app(api_key: str | None = None, dsh_path: str | None = None) -> FastA
         if _pool is None:
             return JSONResponse(content={"object": "list", "data": []})
         models = _pool.list_models()
+        # The rotating route leads, so a picker that takes the first entry
+        # keeps the old behaviour; each free model follows under its own id.
+        auto = {
+            "id": "proxy-auto",
+            "name": "Free (auto-routed free models)",
+            "object": "model",
+            "created": 0,
+            "owned_by": "openrouter-free-proxy",
+            "context_length": min((int(m["context_length"]) for m in models), default=4096),
+        }
         return JSONResponse(
             content={
                 "object": "list",
-                "data": [
+                "data": [auto] + [
                     {
                         "id": m["id"],
+                        "name": m["name"] or m["id"],
                         "object": "model",
                         "created": 0,
                         "owned_by": "openrouter",
+                        "context_length": m["context_length"],
                     }
                     for m in models
                 ],

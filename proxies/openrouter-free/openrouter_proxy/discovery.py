@@ -20,6 +20,7 @@ class FreeModel:
 
     id: str
     context_length: int = 4096
+    name: str = ""
     input_modalities: tuple[str, ...] = ("text",)
     output_modalities: tuple[str, ...] = ("text",)
 
@@ -103,6 +104,7 @@ class Discovery:
             candidate = FreeModel(
                 id=m["id"],
                 context_length=m.get("context_length", 4096),
+                name=m.get("name") or "",
                 input_modalities=tuple(arch.get("input_modalities") or ("text",)),
                 output_modalities=tuple(arch.get("output_modalities") or ("text",)),
             )

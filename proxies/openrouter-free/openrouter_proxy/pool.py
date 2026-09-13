@@ -100,10 +100,16 @@ class WarmPool:
             selected.last_used = time.monotonic()
             return selected.model
 
+    def find(self, model_id: str) -> Optional[FreeModel]:
+        """The discovered free model with this id, healthy or not."""
+        state = self._states.get(model_id)
+        return state.model if state is not None else None
+
     def list_models(self) -> list[dict[str, object]]:
         return [
             {
                 "id": s.model.id,
+                "name": s.model.name,
                 "context_length": s.model.context_length,
                 "healthy": s.is_healthy,
                 "warm": s.is_warm,
